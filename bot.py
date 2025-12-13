@@ -144,29 +144,53 @@ def main():
     # أو إذا كان لديك DatabaseManager: from database import DatabaseManager
     from database import Session, Series, Episode  # <-- استبدل هذا بالسطر الصحيح لمشروعك
     
-    async def debug_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """أمر /debug - فحص قاعدة البيانات مباشرةً"""
+        async def debug_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """أمر /debug - فحص قاعدة البيانات باستخدام SQL المباشر"""
         try:
-            session = Session()
-            # 1. عدّ المسلسلات والحلقات
-            series_count = session.query(Series).count()
-            episodes_count = session.query(Episode).count()
+            # استخدم اتصال SQL مباشر لتجنب مشاكل تعريفات النماذج (ORM)
+            from sqlalchemy import create_engine, text
+            # تأكد من أن DATABASE_URL موجود في Config أو البيئة
+            db_url = Config.DATABASE_URL if hasattr(Config, 'DATABASE_URL') else os.environ.get('DATABASE_URL')
+            if not db_url:
+                await update.message.reply_text("❌ خطأ: لم يتم العثور على رابط قاعدة البيانات (DATABASE_URL).")
+                return
             
-            # 2. خذ عينة من أسماء المسلسلات
-            sample_series = session.query(Series.name).limit(5).all()
-            sample_names = [s[0] for s in sample_series] if sample_series else ["لا يوجد"]
+            engine = create_engine(db_url)
             
-            session.close()  # تأكد من إغلاق الجلسة
+            with engine.connect() as conn:
+                # 1. عد المسلسلات
+                series_result = conn.execute(text("SELECT COUNT(*) FROM series")).fetchone()
+                # 2. عد الحلقات
+                episodes_result = conn.execute(text("SELECT COUNT(*) FROM episodes")).fetchone()
+                # 3. جلب عينة من أسماء المسلسلات
+                sample_result = conn.execute(text("SELECT name FROM series ORDER BY id LIMIT 5")).fetchall()
+                # 4. (اختياري) جلب عينة من الحلقات الأخيرة
+                recent_eps = conn.execute(text("""
+                    SELECT s.name, e.episode_number 
+                    FROM episodes e 
+                    JOIN series s ON e.series_id = s.id 
+                    ORDER BY e.id DESC 
+                    LIMIT 3
+                """)).fetchall()
             
-            await update.message.reply_text(
-                f"📊 **فحص قاعدة البيانات:**\n"
+            series_count = series_result[0] if series_result else 0
+            episodes_count = episodes_result[0] if episodes_result else 0
+            sample_names = [row[0] for row in sample_result] if sample_result else ["لا يوجد"]
+            recent_episodes = [f"{row[0]} (ح {row[1]})" for row in recent_eps] if recent_eps else ["لا يوجد"]
+            
+            reply_text = (
+                f"📊 **فحص قاعدة البيانات (SQL مباشر):**\n"
                 f"• عدد المسلسلات: `{series_count}`\n"
                 f"• عدد الحلقات: `{episodes_count}`\n"
-                f"• أمثلة على الأسماء: {', '.join(sample_names)}",
-                parse_mode='Markdown'
+                f"• أمثلة على المسلسلات: {', '.join(sample_names)}\n"
+                f"• حلقات مضافة حديثاً: {', '.join(recent_episodes)}"
             )
+            
+            await update.message.reply_text(reply_text, parse_mode='Markdown')
+            
         except Exception as e:
-            await update.message.reply_text(f"❌ خطأ في الفحص: {str(e)}")
+            await update.message.reply_text(f"❌ خطأ في فحص قاعدة البيانات:\n`{str(e)[:300]}`")
+
     
     # أضف Handler لأمر /debug
     application.add_handler(CommandHandler("debug", debug_db))
