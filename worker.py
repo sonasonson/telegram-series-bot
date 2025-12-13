@@ -17,7 +17,7 @@ API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@ShoofFilm")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-STRING_SESSION = os.environ.get("STRING_SESSION", "")  # الجلسة المخزنة
+STRING_SESSION = os.environ.get("STRING_SESSION", "1BJWap1sBuzzoygXcwqBFnfSaqH1L8GeX8Ity6M4sUTplD3coTr-zzUowaR2B39wYq1-YStXztOJ8nBUwu4miCg7MGubDp8A_mP2g547lsxqMQ9Ggdb43twpELGV0rYM611lDx1Zfze-X5DUD5mYWcfH9NrG3EFoV1rKfbPyf07nI_tC4XU_cgnMMEOZALlhCwz_DIYBJ2oraG80z98mchqeaIhnUkL5iYVyrNki3pR0J9GPDHW43JL2LyPeH6IAgCNdxjQpwZe2VIHG6x-ZeEJUlSkXmOGgwnoGft1OeSLp-JlocaYArMQ2ns-v2sUjVmfZXQt_aSed2FBfy-JgDUc-7e80afnY=")  # الجلسة المخزنة
 
 # تحقق من وجود جميع المتغيرات الأساسية
 if not all([API_ID, API_HASH, DATABASE_URL, STRING_SESSION]):
