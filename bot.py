@@ -3,6 +3,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from config import Config
+from sqlalchemy import create_engine, text
 
 # إعداد التسجيل
 logging.basicConfig(
