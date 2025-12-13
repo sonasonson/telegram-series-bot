@@ -1,98 +1,225 @@
-# worker.py
-import os, asyncio, re
-from telethon import TelegramClient
+import os
+import asyncio
+import re
+import sys
+from datetime import datetime
+from telethon import TelegramClient, events
+from telethon.tl.types import Message
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 
-# 🚨 **مهم: اربط المتغيرات بشكل صحيح**
-# 1. تأكد من أن هذه المتغيرات موجودة في إعدادات خدمة `worker` على Railway:
-#    API_ID, API_HASH, CHANNEL_USERNAME, DATABASE_URL
+# ==============================
+# 1. إعدادات التهيئة من متغيرات البيئة
+# ==============================
+# تأكد من إضافة هذه المتغيرات في إعدادات خدمة `worker` على Railway
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
-CHANNEL = os.environ.get("CHANNEL_USERNAME", "@ShoofFilm")
-DB_URL = os.environ.get("DATABASE_URL")  # هذا المتغير مهم جدًا وسيوفره Railway
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@ShoofFilm")  # قناتك
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-# 2. أنشئ محرك قاعدة البيانات - تأكد من أن DB_URL ليس فارغًا
-if DB_URL and DB_URL.startswith("postgres://"):
-    DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
-engine = create_engine(DB_URL) if DB_URL else None
+# تحقق من وجود المتغيرات الأساسية
+if not API_ID or not API_HASH or not DATABASE_URL:
+    print("❌ خطأ: المتغيرات البيئية API_ID, API_HASH, أو DATABASE_URL غير موجودة.")
+    print("   تأكد من إضافتها في إعدادات خدمة 'worker' على Railway.")
+    sys.exit(1)
 
-async def main():
-    print("🔍 بدء مراقبة القناة...")
-    if not engine:
-        print("❌ خطأ: لم يتم العثور على رابط قاعدة البيانات (DATABASE_URL).")
-        return
+# إصلاح رابط قاعدة البيانات إذا كان من Railway (يستخدم postgres://)
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-    client = TelegramClient('session', API_ID, API_HASH)
-    await client.start()
-    print(f"✅ تم الاتصال بتليجرام. جارٍ مراقبة القناة: {CHANNEL}")
+# ==============================
+# 2. إعداد الاتصال بقاعدة البيانات
+# ==============================
+try:
+    engine = create_engine(DATABASE_URL)
+    # اختبار الاتصال
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    print("✅ تم الاتصال بقاعدة البيانات بنجاح.")
+except Exception as e:
+    print(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
+    sys.exit(1)
 
-    channel = await client.get_entity(CHANNEL)
-    last_msg_id = 0
-
-    while True:
-        try:
-            messages = await client.get_messages(channel, limit=10, min_id=last_msg_id)
-            for msg in messages:
-                if msg.id > last_msg_id:
-                    last_msg_id = msg.id
-                    if msg.text:
-                        # 📌 **أنت هنا: أضف منطق تحليل رسالة القناة**
-                        # مثال: استخراج اسم المسلسل ورقم الحلقة من النص
-                        series_name, season, ep_num = parse_message(msg.text)
-                        if series_name:
-                            save_to_db(series_name, season, ep_num, msg.id)
-            await asyncio.sleep(30)  # انتظر 30 ثانية قبل الفحص التالي
-        except Exception as e:
-            print(f"⚠️ خطأ: {e}")
-            await asyncio.sleep(60)
-
-# ❗ **وظيفتك: أكمل الدالتين التاليتين حسب تنسيق منشورات قناتك**
-def parse_message(text):
+# ==============================
+# 3. دالة لتحليل عنوان المسلسل (النمط الخاص بك)
+# ==============================
+def parse_series_info(message_text):
     """
-    دالة لتحليل نص الرسالة من القناة واستخراج معلومات المسلسل.
-    أنت من يعرف نمط منشورات قناتك. مثال لنمط "مسلسل - الموسم 1 - الحلقة 5":
+    تحليل نص الرسالة لاستخراج اسم المسلسل ورقم الحلقة.
+    يدعم الأنماط:
+        - "برغم القانون 25"
+        - "كارثة طبيعية الحلقة 1"
+        - "اسم المسلسل 10"
+        - "اسم المسلسل الحلقة 5"
     """
-    # مثال بسيط: عدّل هذا النمط ليناسب قناتك
-    pattern = r"مسلسل (.+?) - الموسم (\d+) - الحلقة (\d+)"
-    match = re.search(pattern, text)
+    if not message_text:
+        return None, None
+    
+    text_cleaned = message_text.strip()
+    
+    # النمط 1: "اسم المسلسل رقم" - مثل "برغم القانون 25"
+    pattern1 = r"^(.*?[^\d])\s+(\d+)$"
+    # النمط 2: "اسم المسلسل الحلقة رقم" - مثل "كارثة طبيعية الحلقة 1"
+    pattern2 = r"^(.*?)\s+الحلقة\s+(\d+)$"
+    
+    match = re.search(pattern1, text_cleaned)
     if match:
-        return match.group(1), int(match.group(2)), int(match.group(3))
-    return None, None, None
+        series_name = match.group(1).strip()
+        episode_num = int(match.group(2))
+        return series_name, episode_num
+    
+    match = re.search(pattern2, text_cleaned)
+    if match:
+        series_name = match.group(1).strip()
+        episode_num = int(match.group(2))
+        return series_name, episode_num
+    
+    return None, None
 
-def save_to_db(series_name, season, episode_num, telegram_msg_id):
-    """دالة لحفظ الحلقة في قاعدة البيانات."""
+# ==============================
+# 4. دالة لحفظ المسلسل في قاعدة البيانات
+# ==============================
+def save_to_database(series_name, episode_num, telegram_msg_id):
+    """حفظ المسلسل والحلقة في قاعدة البيانات"""
     try:
-        with engine.connect() as conn:
-            # 1. تحقق إذا كان المسلسل موجودًا أو أضفه
+        with engine.begin() as conn:  # يبدأ معاملة ويلتزم تلقائيًا
+            # 1. البحث عن المسلسل أو إضافته
             result = conn.execute(
                 text("SELECT id FROM series WHERE name = :name"),
                 {"name": series_name}
             ).fetchone()
+            
             if not result:
+                # إضافة مسلسل جديد
                 conn.execute(
-                    text("INSERT INTO series (name) VALUES (:name)"),
-                    {"name": series_name}
+                    text("INSERT INTO series (name, created_at) VALUES (:name, :now)"),
+                    {"name": series_name, "now": datetime.utcnow()}
                 )
-                conn.commit()
+                # جلب الـ ID الجديد
                 result = conn.execute(
                     text("SELECT id FROM series WHERE name = :name"),
                     {"name": series_name}
                 ).fetchone()
-
+            
             series_id = result[0]
-            # 2. أضف الحلقة
+            
+            # 2. إضافة الحلقة (تجنب التكرار)
             conn.execute(
                 text("""
-                    INSERT INTO episodes (series_id, season, episode_number, telegram_message_id)
-                    VALUES (:sid, :season, :ep, :msg_id)
-                    ON CONFLICT DO NOTHING
+                    INSERT INTO episodes (series_id, season, episode_number, 
+                           telegram_message_id, telegram_channel_id, added_at)
+                    VALUES (:sid, 1, :ep_num, :msg_id, :channel, :now)
+                    ON CONFLICT (telegram_message_id) DO NOTHING
                 """),
-                {"sid": series_id, "season": season, "ep": episode_num, "msg_id": telegram_msg_id}
+                {
+                    "sid": series_id,
+                    "ep_num": episode_num,
+                    "msg_id": telegram_msg_id,
+                    "channel": CHANNEL_USERNAME,
+                    "now": datetime.utcnow()
+                }
             )
-            conn.commit()
-            print(f"✅ تمت إضافة: {series_name} S{season}E{episode_num}")
+            
+        print(f"✅ تمت إضافة/تحديث: {series_name} - الحلقة {episode_num} (ID: {telegram_msg_id})")
+        return True
+        
+    except SQLAlchemyError as e:
+        print(f"❌ خطأ في قاعدة البيانات لحفظ {series_name}: {e}")
+        return False
     except Exception as e:
-        print(f"❌ خطأ في حفظ البيانات: {e}")
+        print(f"❌ خطأ غير متوقع: {e}")
+        return False
 
+# ==============================
+# 5. الدالة الرئيسية لمراقبة القناة
+# ==============================
+async def monitor_channel():
+    """الدالة الرئيسية لمراقبة القناة وإضافة المحتوى الجديد"""
+    print("=" * 50)
+    print(f"🔍 بدء مراقبة القناة: {CHANNEL_USERNAME}")
+    print("=" * 50)
+    
+    # إنشاء عميل Telethon
+    client = TelegramClient('worker_session', API_ID, API_HASH)
+    
+    try:
+        await client.start()
+        print("✅ تم الاتصال بـ Telegram بنجاح.")
+        
+        # الحصول على كيان القناة
+        try:
+            channel = await client.get_entity(CHANNEL_USERNAME)
+            print(f"✅ تم العثور على القناة: {channel.title}")
+        except Exception as e:
+            print(f"❌ لا يمكن العثور على القناة {CHANNEL_USERNAME}: {e}")
+            print("   تأكد من:")
+            print("   1. أن القناة عامة (Public)")
+            print("   2. أن حساب الـ API_ID له صلاحية الوصول")
+            print("   3. من صحة اسم المستخدم (مثال: @ShoofFilm)")
+            return
+        
+        # مراقبة الرسائل الجديدة
+        @client.on(events.NewMessage(chats=channel))
+        async def handler(event):
+            """معالج الرسائل الجديدة"""
+            message = event.message
+            if message.text:
+                print(f"📥 رسالة جديدة: {message.text[:50]}...")
+                
+                # تحليل الرسالة
+                series_name, episode_num = parse_series_info(message.text)
+                
+                if series_name and episode_num:
+                    print(f"   تم التعرف على: {series_name} - الحلقة {episode_num}")
+                    # حفظ في قاعدة البيانات
+                    save_to_database(series_name, episode_num, message.id)
+                else:
+                    print(f"   ⚠️ لم يتطابق مع نمط المسلسل (تم تخطيها)")
+        
+        print("\n🎯 جاهز لاستقبال المسلسلات الجديدة من القناة...")
+        print("   اضغط Ctrl+C لإيقاف المراقبة.\n")
+        
+        # استمر في التشغيل حتى يتم إيقافه
+        await client.run_until_disconnected()
+        
+    except Exception as e:
+        print(f"❌ خطأ في تشغيل الـ Worker: {e}")
+    finally:
+        await client.disconnect()
+        print("🛑 تم إيقاف مراقبة القناة.")
+
+# ==============================
+# 6. نقطة دخول البرنامج
+# ==============================
 if __name__ == "__main__":
-    asyncio.run(main())
+    print("🚀 بدء تشغيل Worker لمراقبة قناة المسلسلات...")
+    
+    # التحقق من الجداول الأساسية (اختياري - للتطوير)
+    try:
+        with engine.connect() as conn:
+            # تحقق من وجود جدول المسلسلات
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS series (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) UNIQUE NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            # تحقق من وجود جدول الحلقات
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS episodes (
+                    id SERIAL PRIMARY KEY,
+                    series_id INTEGER REFERENCES series(id),
+                    season INTEGER DEFAULT 1,
+                    episode_number INTEGER NOT NULL,
+                    telegram_message_id INTEGER UNIQUE NOT NULL,
+                    telegram_channel_id VARCHAR(255),
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+        print("✅ تم التحقق من هياكل الجداول (أو إنشاؤها).")
+    except Exception as e:
+        print(f"⚠️ ملاحظة حول الجداول: {e}")
+    
+    # تشغيل المراقبة
+    asyncio.run(monitor_channel())
