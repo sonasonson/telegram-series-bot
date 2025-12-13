@@ -15,16 +15,18 @@ Base = declarative_base()
 Session = sessionmaker(bind=engine)
 
 # تعريف النماذج
+# تعريف Series المصحّح في database.py
 class Series(Base):
     __tablename__ = 'series'
     
     id = Column(Integer, primary_key=True)
-    name = Column(String(255), nullable=False, unique=True)
-    description = Column(Text)
-    category = Column(String(100))
-    cover_image = Column(String(500))
-    created_at = Column(DateTime, default=datetime.utcnow)
-    is_active = Column(Integer, default=1)
+    name = Column(String(255), nullable=False, unique=True)  # هذا العمود موجود
+    created_at = Column(DateTime, default=datetime.utcnow)   # هذا موجود
+    # احذف الأعمدة التالية إذا كانت موجودة في كودك:
+    # description = Column(Text)
+    # category = Column(String(100))
+    # cover_image = Column(String(500))
+    # is_active = Column(Integer, default=1)
 
 class Episode(Base):
     __tablename__ = 'episodes'
