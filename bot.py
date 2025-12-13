@@ -137,7 +137,42 @@ def main():
     # إنشاء التطبيق
     application = Application.builder().token(Config.BOT_TOKEN).build()
     
-    # إضافة handlers
+    # ----- 🔍 إضافة أمر التصحيح (DEBUG) هنا -----
+    from telegram.ext import CommandHandler
+    # تأكد من أن هذه الاستيرادات تتطابق مع مشروعك. الأكثر شيوعاً:
+    # من database.py: from database import Session, Series, Episode
+    # أو إذا كان لديك DatabaseManager: from database import DatabaseManager
+    from database import Session, Series, Episode  # <-- استبدل هذا بالسطر الصحيح لمشروعك
+    
+    async def debug_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """أمر /debug - فحص قاعدة البيانات مباشرةً"""
+        try:
+            session = Session()
+            # 1. عدّ المسلسلات والحلقات
+            series_count = session.query(Series).count()
+            episodes_count = session.query(Episode).count()
+            
+            # 2. خذ عينة من أسماء المسلسلات
+            sample_series = session.query(Series.name).limit(5).all()
+            sample_names = [s[0] for s in sample_series] if sample_series else ["لا يوجد"]
+            
+            session.close()  # تأكد من إغلاق الجلسة
+            
+            await update.message.reply_text(
+                f"📊 **فحص قاعدة البيانات:**\n"
+                f"• عدد المسلسلات: `{series_count}`\n"
+                f"• عدد الحلقات: `{episodes_count}`\n"
+                f"• أمثلة على الأسماء: {', '.join(sample_names)}",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ خطأ في الفحص: {str(e)}")
+    
+    # أضف Handler لأمر /debug
+    application.add_handler(CommandHandler("debug", debug_db))
+    # ----- انتهاء إضافة أمر التصحيح -----
+    
+    # إضافة handlers الأصلية
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("series", show_series))
     application.add_handler(CallbackQueryHandler(button_handler))
@@ -147,7 +182,6 @@ def main():
     webhook_url = os.environ.get('WEBHOOK_URL', '')
     
     if webhook_url:
-        # استخدم Webhook على Railway
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
@@ -155,7 +189,6 @@ def main():
             webhook_url=f"{webhook_url}/{Config.BOT_TOKEN}"
         )
     else:
-        # استخدم Polling للتنمية المحلية
         print("🤖 البوت يعمل باستخدام Polling...")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
