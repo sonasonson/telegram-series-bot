@@ -49,19 +49,20 @@ if DATABASE_URL:
 # 2. دوال المساعدة للتعامل مع قاعدة البيانات
 # ==============================
 async def get_all_series():
-    """جلب جميع المسلسلات من قاعدة البيانات"""
+    """جلب جميع المسلسلات من قاعدة البيانات مرتبة حسب التاريخ"""
     if not engine:
         return []
     
     try:
         with engine.connect() as conn:
-            # جلب المسلسلات مع عدد حلقات كل منها
+            # جلب المسلسلات مع عدد حلقات كل منها وترتيبها حسب التاريخ (الأحدث أولاً)
             result = conn.execute(text("""
-                SELECT s.id, s.name, COUNT(e.id) as episode_count
+                SELECT s.id, s.name, COUNT(e.id) as episode_count, 
+                       s.created_at, COALESCE(MAX(e.created_at), s.created_at) as last_update
                 FROM series s
                 LEFT JOIN episodes e ON s.id = e.series_id
-                GROUP BY s.id, s.name
-                ORDER BY s.name
+                GROUP BY s.id, s.name, s.created_at
+                ORDER BY COALESCE(MAX(e.created_at), s.created_at) DESC, s.created_at DESC
             """))
             return result.fetchall()
     except Exception as e:
