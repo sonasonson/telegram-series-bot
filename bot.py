@@ -225,11 +225,13 @@ async def show_series(update: Update, context: ContextTypes.DEFAULT_TYPE, sort_b
         series_list = await get_series_newest_first()
         title = "📺 *قائمة المسلسلات (الأحدث أولاً)*\n\n"
         sort_button_text = "📅 الأحدث"
+        other_sort_text = ""
         other_sort_data = "sort_oldest"
     else:  # الافتراضي: الأقدم أولاً
         series_list = await get_all_series()
         title = "📺 *قائمة المسلسلات (الأقدم أولاً)*\n\n"
         sort_button_text = "📅 الأقدم"
+        other_sort_text = ""
         other_sort_data = "sort_newest"
     
     if not series_list:
