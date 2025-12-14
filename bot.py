@@ -48,26 +48,80 @@ if DATABASE_URL:
 # ==============================
 # 2. دوال المساعدة للتعامل مع قاعدة البيانات
 # ==============================
-async def get_all_series():
-    """جلب جميع المسلسلات من قاعدة البيانات مرتبة حسب التاريخ"""
+async def show_series(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض جميع المسلسلات (يعمل مع /series ومع الزر)"""
     if not engine:
-        return []
+        error_msg = "❌ قاعدة البيانات غير متاحة حالياً."
+        if update.callback_query:
+            await update.callback_query.edit_message_text(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
+        return
     
-    try:
-        with engine.connect() as conn:
-            # جلب المسلسلات مع عدد حلقات كل منها وترتيبها حسب التاريخ (الأحدث أولاً)
-            result = conn.execute(text("""
-                SELECT s.id, s.name, COUNT(e.id) as episode_count, 
-                       s.created_at, COALESCE(MAX(e.created_at), s.created_at) as last_update
-                FROM series s
-                LEFT JOIN episodes e ON s.id = e.series_id
-                GROUP BY s.id, s.name, s.created_at
-                ORDER BY COALESCE(MAX(e.created_at), s.created_at) DESC, s.created_at DESC
-            """))
-            return result.fetchall()
-    except Exception as e:
-        print(f"❌ خطأ في جلب المسلسلات: {e}")
-        return []
+    series_list = await get_all_series()
+    
+    if not series_list:
+        no_data_msg = "📭 لا توجد مسلسلات حالياً."
+        if update.callback_query:
+            await update.callback_query.edit_message_text(no_data_msg)
+        else:
+            await update.message.reply_text(no_data_msg)
+        return
+    
+    # بناء النص مع التاريخ
+    text = "📺 *قائمة المسلسلات*\n\n"
+    keyboard = []
+    
+    for series in series_list:
+        series_id, name, episode_count, created_at, last_update = series
+        
+        # تنسيق التاريخ بشكل جميل
+        from datetime import datetime
+        try:
+            if last_update:
+                # إذا كان last_update نصياً، قم بتحويله إلى datetime
+                if isinstance(last_update, str):
+                    last_update = datetime.strptime(last_update, '%Y-%m-%d %H:%M:%S.%f')
+                date_str = last_update.strftime('%Y-%m-%d')
+            else:
+                date_str = "تاريخ غير معروف"
+        except:
+            date_str = "تاريخ غير معروف"
+        
+        # إضافة المسلسل للنص مع التاريخ
+        text += f"• *{name}* ({episode_count} حلقة)\n  📅 `{date_str}`\n\n"
+        
+        # زر المسلسل
+        keyboard.append([
+            InlineKeyboardButton(
+                f"📺 {name[:15]} ({episode_count})",
+                callback_data=f"series_{series_id}"
+            )
+        ])
+    
+    # أزرار إضافية للترتيب
+    keyboard.append([
+        InlineKeyboardButton("🔄 الأحدث", callback_data="all_series"),
+        InlineKeyboardButton("🔤 أبجدي", callback_data="series_alphabetical")
+    ])
+    
+    # أزرار التنقل
+    keyboard.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="home")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # الإرسال حسب مصدر الطلب
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
 
 async def get_series_episodes(series_id):
     """جلب حلقات مسلسل محدد"""
