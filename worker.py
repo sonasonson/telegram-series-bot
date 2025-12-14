@@ -94,27 +94,32 @@ def parse_series_info(message_text):
     
     return None, None
 
-def save_to_database(series_name, episode_num, telegram_msg_id):
-    """حفظ المسلسل والحلقة في قاعدة البيانات."""
+def save_to_database(series_name, episode_num, telegram_msg_id, series_id=None):
+    """حفظ المسلسل والحلقة في قاعدة البيانات مع series_id"""
     try:
         with engine.begin() as conn:
-            result = conn.execute(
-                text("SELECT id FROM series WHERE name = :name"),
-                {"name": series_name}
-            ).fetchone()
-            
-            if not result:
-                conn.execute(
-                    text("INSERT INTO series (name) VALUES (:name)"),
-                    {"name": series_name}
-                )
+            # إذا لم يتم تمرير series_id، ابحث عنه
+            if not series_id:
                 result = conn.execute(
                     text("SELECT id FROM series WHERE name = :name"),
                     {"name": series_name}
                 ).fetchone()
+                
+                if not result:
+                    # إضافة مسلسل جديد
+                    conn.execute(
+                        text("INSERT INTO series (name) VALUES (:name)"),
+                        {"name": series_name}
+                    )
+                    # جلب الـ ID الجديد
+                    result = conn.execute(
+                        text("SELECT id FROM series WHERE name = :name"),
+                        {"name": series_name}
+                    ).fetchone()
+                
+                series_id = result[0]
             
-            series_id = result[0]
-            
+            # إضافة الحلقة مع series_id و channel_id الثابت
             conn.execute(
                 text("""
                     INSERT INTO episodes (series_id, season, episode_number, 
@@ -126,18 +131,15 @@ def save_to_database(series_name, episode_num, telegram_msg_id):
                     "sid": series_id,
                     "ep_num": episode_num,
                     "msg_id": telegram_msg_id,
-                    "channel": CHANNEL_USERNAME
+                    "channel": "@ShoofFilm"  # <-- استخدم المعرف الثابت هنا
                 }
             )
-        
-        print(f"✅ تمت إضافة/تحديث: {series_name} - الحلقة {episode_num}")
+            
+        print(f"✅ تمت إضافة/تحديث: {series_name} (ID:{series_id}) - الحلقة {episode_num}")
         return True
         
     except SQLAlchemyError as e:
         print(f"❌ خطأ في قاعدة البيانات: {e}")
-        return False
-    except Exception as e:
-        print(f"❌ خطأ غير متوقع: {e}")
         return False
 
 # ==============================
