@@ -260,8 +260,10 @@ async def show_series_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
     # جلب معلومات المسلسل
     try:
         with engine.connect() as conn:
+            # استخدم دالة text() من sqlalchemy للاستعلام
+            from sqlalchemy import text as sql_text
             series_info = conn.execute(
-                text("SELECT name FROM series WHERE id = :id"),
+                sql_text("SELECT name FROM series WHERE id = :id"),
                 {"id": series_id}
             ).fetchone()
     except Exception as e:
@@ -276,9 +278,13 @@ async def show_series_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
     episodes = await get_series_episodes(series_id)
     
     if not episodes:
-        text = f"🎬 *{series_name}*\n\n📭 لا توجد حلقات حالياً."
+        message_text = f"🎬 *{series_name}*\n\n📭 لا توجد حلقات حالياً."
         keyboard = [[InlineKeyboardButton("⬅️ رجوع", callback_data="all_series")]]
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(
+            message_text, 
+            parse_mode='Markdown', 
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
     
     # تجميع الحلقات حسب الموسم
@@ -289,12 +295,12 @@ async def show_series_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
             seasons[season] = []
         seasons[season].append((ep_id, ep_num, msg_id, channel_id))
     
-    # بناء النص
-    text = f"🎬 *{series_name}*\n\n"
+    # بناء النص - استخدم اسم متغير مختلف عن `text`
+    message_text = f"🎬 *{series_name}*\n\n"
     keyboard = []
     
     for season_num in sorted(seasons.keys()):
-        text += f"📁 *الموسم {season_num}:*\n"
+        message_text += f"📁 *الموسم {season_num}:*\n"
         
         # تقسيم أزرار الحلقات (5 أزرار في كل صف)
         season_buttons = []
@@ -321,7 +327,7 @@ async def show_series_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
     ])
     
     await query.edit_message_text(
-        text,
+        message_text,  # استخدم المتغير الجديد message_text
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -332,7 +338,8 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
     
     try:
         with engine.connect() as conn:
-            result = conn.execute(text("""
+            from sqlalchemy import text as sql_text
+            result = conn.execute(sql_text("""
                 SELECT e.season, e.episode_number, e.telegram_message_id,
                        e.telegram_channel_id, s.name as series_name
                 FROM episodes e
@@ -361,7 +368,7 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
     
     episode_link = f"https://t.me/{channel_id}/{msg_id}"
     
-    text = (
+    message_text = (
         f"🎬 *{series_name}*\n"
         f"📁 الموسم {season} - الحلقة {episode_num}\n\n"
         f"🔗 [رابط الحلقة في القناة]({episode_link})"
@@ -374,7 +381,7 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     
     await query.edit_message_text(
-        text,
+        message_text,  # استخدم المتغير الجديد message_text
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard),
         disable_web_page_preview=False
