@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, text
 # ==============================
 # 1. الإعدادات والتكوين
 # ==============================
+# تأكد من إضافة BOT_TOKEN في متغيرات البيئة على Railway (خدمة web)
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
@@ -36,6 +37,7 @@ engine = None
 if DATABASE_URL:
     try:
         engine = create_engine(DATABASE_URL)
+        # اختبار الاتصال
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         print("✅ تم الاتصال بقاعدة البيانات بنجاح.")
@@ -47,60 +49,23 @@ if DATABASE_URL:
 # 2. دوال المساعدة للتعامل مع قاعدة البيانات
 # ==============================
 async def get_all_series():
-    """جلب جميع المسلسلات من قاعدة البيانات مرتبة حسب id (الأقدم أولاً)"""
+    """جلب جميع المسلسلات من قاعدة البيانات"""
     if not engine:
         return []
     
     try:
         with engine.connect() as conn:
+            # جلب المسلسلات مع عدد حلقات كل منها
             result = conn.execute(text("""
                 SELECT s.id, s.name, COUNT(e.id) as episode_count
                 FROM series s
                 LEFT JOIN episodes e ON s.id = e.series_id
                 GROUP BY s.id, s.name
-                ORDER BY s.id ASC  -- ترتيب حسب id تصاعدياً
+                ORDER BY s.name
             """))
             return result.fetchall()
     except Exception as e:
         print(f"❌ خطأ في جلب المسلسلات: {e}")
-        return []
-
-async def get_series_alphabetical():
-    """جلب جميع المسلسلات من قاعدة البيانات مرتبة أبجدياً"""
-    if not engine:
-        return []
-    
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT s.id, s.name, COUNT(e.id) as episode_count
-                FROM series s
-                LEFT JOIN episodes e ON s.id = e.series_id
-                GROUP BY s.id, s.name
-                ORDER BY s.name ASC
-            """))
-            return result.fetchall()
-    except Exception as e:
-        print(f"❌ خطأ في جلب المسلسلات أبجدياً: {e}")
-        return []
-
-async def get_series_by_id_desc():
-    """جلب جميع المسلسلات من قاعدة البيانات مرتبة حسب id تنازلياً (الأحدث أولاً)"""
-    if not engine:
-        return []
-    
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT s.id, s.name, COUNT(e.id) as episode_count
-                FROM series s
-                LEFT JOIN episodes e ON s.id = e.series_id
-                GROUP BY s.id, s.name
-                ORDER BY s.id DESC  -- ترتيب حسب id تنازلياً
-            """))
-            return result.fetchall()
-    except Exception as e:
-        print(f"❌ خطأ في جلب المسلسلات (حسب id تنازلياً): {e}")
         return []
 
 async def get_series_episodes(series_id):
@@ -110,6 +75,7 @@ async def get_series_episodes(series_id):
     
     try:
         with engine.connect() as conn:
+            # جلب الحلقات مرتبة بالموسم ورقم الحلقة
             result = conn.execute(text("""
                 SELECT e.id, e.season, e.episode_number, 
                        e.telegram_message_id, e.telegram_channel_id
@@ -123,10 +89,10 @@ async def get_series_episodes(series_id):
         return []
 
 # ==============================
-# 3. دوال البوت الرئيسية - مُعدلة
+# 3. دوال البوت الرئيسية
 # ==============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /start - مُعدل ليعمل في جميع الحالات"""
+    """أمر /start"""
     keyboard = [
         [InlineKeyboardButton("📺 جميع المسلسلات", callback_data='all_series')],
         [InlineKeyboardButton("🔍 بحث سريع", switch_inline_query_current_chat='')],
@@ -148,128 +114,65 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /debug - فحص حالة النظام
     """
     
-    # إرسال الرسالة بالطريقة الصحيحة بناءً على نوع الطلب
-    try:
-        if update.callback_query:
-            await update.callback_query.answer()
-            await update.callback_query.edit_message_text(
-                welcome_text,
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-        elif update.message:
-            await update.message.reply_text(
-                welcome_text,
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-        else:
-            logger.error("❌ نوع غير معروف للـ update")
-    except Exception as e:
-        logger.error(f"❌ خطأ في دالة start: {e}")
-        if update.effective_chat:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=welcome_text,
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            welcome_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            welcome_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
 
-async def show_series(update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by="id_asc"):
-    """عرض جميع المسلسلات مع خيارات الترتيب"""
+async def show_series(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض جميع المسلسلات (يعمل مع /series ومع الزر)"""
     if not engine:
         error_msg = "❌ قاعدة البيانات غير متاحة حالياً."
-        
         if update.callback_query:
-            await update.callback_query.answer()
             await update.callback_query.edit_message_text(error_msg)
-        elif update.message:
+        else:
             await update.message.reply_text(error_msg)
         return
     
-    # تحديد طريقة الترتيب
-    if sort_by == "alphabetical":
-        series_list = await get_series_alphabetical()
-        title = "📺 *قائمة المسلسلات (أبجدي)*\n\n"
-        sort_button_text = "🔤 أبجدي"
-        other_sort_text = "🆔 بالرقم"
-        other_sort_data = "sort_id_asc"
-    elif sort_by == "id_desc":
-        series_list = await get_series_by_id_desc()
-        title = "📺 *قائمة المسلسلات (الأحدث أولاً)*\n\n"
-        sort_button_text = "🆔 الأحدث"
-        other_sort_text = "🆔 الأقدم"
-        other_sort_data = "sort_id_asc"
-    else:  # الافتراضي: حسب id تصاعدياً (الأقدم أولاً)
-        series_list = await get_all_series()
-        title = "📺 *قائمة المسلسلات (حسب الإضافة)*\n\n"
-        sort_button_text = "🆔 الأقدم"
-        other_sort_text = "🆔 الأحدث"
-        other_sort_data = "sort_id_desc"
+    series_list = await get_all_series()
     
     if not series_list:
         no_data_msg = "📭 لا توجد مسلسلات حالياً."
-        
         if update.callback_query:
-            await update.callback_query.answer()
             await update.callback_query.edit_message_text(no_data_msg)
-        elif update.message:
+        else:
             await update.message.reply_text(no_data_msg)
         return
     
     # بناء النص
-    text = title
+    text = "📺 *قائمة المسلسلات*\n\n"
     keyboard = []
     
     for series in series_list:
         series_id, name, episode_count = series
-        
-        # عرض اسم المسلسل بالكامل
         text += f"• {name} ({episode_count} حلقة)\n"
-        
-        # إنشاء زر المسلسل
-        button_text = f"{name}"
-        if len(button_text) > 25:
-            button_text = button_text[:22] + "..."
-        button_text += f" ({episode_count})"
-        
         keyboard.append([
             InlineKeyboardButton(
-                button_text,
+                f"📺 {name[:15]} ({episode_count})",
                 callback_data=f"series_{series_id}"
             )
         ])
     
-    # أزرار التنقل والترتيب
-    keyboard.append([
-        InlineKeyboardButton(sort_button_text, callback_data=f"sort_{sort_by}"),
-        InlineKeyboardButton(other_sort_text, callback_data=other_sort_data),
-    ])
-    
-    if sort_by != "alphabetical":
-        keyboard.append([InlineKeyboardButton("🔤 أبجدي", callback_data="sort_alphabetical")])
-    
+    # أزرار التنقل
     keyboard.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="home")])
-    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     # الإرسال حسب مصدر الطلب
     if update.callback_query:
-        try:
-            await update.callback_query.answer()
-            await update.callback_query.edit_message_text(
-                text,
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            logger.error(f"❌ خطأ في تعديل الرسالة: {e}")
-            await update.callback_query.message.reply_text(
-                text,
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-    elif update.message:
+        await update.callback_query.edit_message_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    else:
         await update.message.reply_text(
             text,
             parse_mode='Markdown',
@@ -287,34 +190,29 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # إحصائيات المسلسلات
             series_result = conn.execute(text("SELECT COUNT(*) FROM series")).fetchone()
             episodes_result = conn.execute(text("SELECT COUNT(*) FROM episodes")).fetchone()
+            sample_result = conn.execute(text("SELECT name FROM series LIMIT 5")).fetchall()
             
-            # أول 5 مسلسلات (حسب الترتيب)
-            first_series = conn.execute(text("""
-                SELECT id, name FROM series 
-                ORDER BY id ASC 
-                LIMIT 5
-            """)).fetchall()
-            
-            # آخر 5 مسلسلات مضافة
-            last_series = conn.execute(text("""
-                SELECT id, name FROM series 
-                ORDER BY id DESC 
-                LIMIT 5
+            # آخر حلقات مضافة
+            recent_eps = conn.execute(text("""
+                SELECT s.name, e.episode_number 
+                FROM episodes e 
+                JOIN series s ON e.series_id = s.id 
+                ORDER BY e.id DESC 
+                LIMIT 3
             """)).fetchall()
         
         series_count = series_result[0] if series_result else 0
         episodes_count = episodes_result[0] if episodes_result else 0
-        
-        first_series_text = "\n".join([f"  {row[0]}. {row[1]}" for row in first_series])
-        last_series_text = "\n".join([f"  {row[0]}. {row[1]}" for row in last_series])
+        sample_names = [row[0] for row in sample_result] if sample_result else ["لا يوجد"]
+        recent_episodes = [f"{row[0]} (ح{row[1]})" for row in recent_eps] if recent_eps else ["لا يوجد"]
         
         reply_text = (
             f"📊 **فحص النظام:**\n"
             f"• قاعدة البيانات: {'✅ متصلة' if engine else '❌ غير متصلة'}\n"
             f"• عدد المسلسلات: `{series_count}`\n"
-            f"• عدد الحلقات: `{episodes_count}`\n\n"
-            f"• **أول 5 مسلسلات (حسب ID):**\n{first_series_text}\n\n"
-            f"• **آخر 5 مسلسلات (حسب ID):**\n{last_series_text}"
+            f"• عدد الحلقات: `{episodes_count}`\n"
+            f"• أمثلة على المسلسلات: {', '.join(sample_names)}\n"
+            f"• حلقات حديثة: {', '.join(recent_episodes)}"
         )
         
         await update.message.reply_text(reply_text, parse_mode='Markdown')
@@ -323,66 +221,49 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ خطأ في الفحص:\n`{str(e)[:200]}`")
 
 # ==============================
-# 4. معالج الأزرار التفاعلية - مُعدل
+# 4. معالج الأزرار التفاعلية
 # ==============================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة أزرار InlineKeyboard - مُعدل"""
+    """معالجة أزرار InlineKeyboard"""
     query = update.callback_query
-    
-    # الرد على callback أولاً (مهم جداً)
-    await query.answer()
+    await query.answer()  # مهم لإعلام تليجرام
     
     data = query.data
-    logger.info(f"🔘 زر مضغوط: {data}")
     
-    try:
-        if data == 'home':
-            await start(update, context)
-            return
-        
-        elif data == 'all_series':
-            await show_series(update, context, sort_by="id_asc")
-            return
-        
-        elif data == 'sort_id_asc':
-            await show_series(update, context, sort_by="id_asc")
-            return
-        
-        elif data == 'sort_id_desc':
-            await show_series(update, context, sort_by="id_desc")
-            return
-        
-        elif data == 'sort_alphabetical':
-            await show_series(update, context, sort_by="alphabetical")
-            return
-        
-        elif data.startswith('series_'):
-            series_id = int(data.split('_')[1])
-            await show_series_episodes(update, context, series_id)
-            return
-        
-        elif data.startswith('ep_'):
-            episode_id = int(data.split('_')[1])
-            await show_episode_details(update, context, episode_id)
-            return
-        
-    except Exception as e:
-        logger.error(f"❌ خطأ في معالجة الزر {data}: {e}")
-        error_msg = "❌ حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى."
-        
-        try:
-            await query.edit_message_text(error_msg)
-        except:
-            await query.message.reply_text(error_msg)
+    if data == 'home':
+        await start(update, context)
+        return
+    
+    elif data == 'all_series':
+        # هذا هو التصحيح المهم: استدعاء show_series
+        await show_series(update, context)
+        return
+    
+    elif data.startswith('series_'):
+        series_id = int(data.split('_')[1])
+        await show_series_episodes(update, context, series_id)
+        return
+    
+    elif data.startswith('ep_'):
+        episode_id = int(data.split('_')[1])
+        await show_episode_details(update, context, episode_id)
+        return
+    
+    elif data == 'back_to_series':
+        await show_series(update, context)
+        return
 
 async def show_series_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE, series_id):
     """عرض حلقات مسلسل محدد"""
     query = update.callback_query
     
+    # جلب معلومات المسلسل
     try:
         with engine.connect() as conn:
+            # استخدم دالة text() من sqlalchemy للاستعلام
+            from sqlalchemy import text as sql_text
             series_info = conn.execute(
-                text("SELECT id, name FROM series WHERE id = :id"),
+                sql_text("SELECT name FROM series WHERE id = :id"),
                 {"id": series_id}
             ).fetchone()
     except Exception as e:
@@ -393,12 +274,12 @@ async def show_series_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("❌ المسلسل غير موجود.")
         return
     
-    series_name = series_info[1]
+    series_name = series_info[0]
     episodes = await get_series_episodes(series_id)
     
     if not episodes:
         message_text = f"🎬 *{series_name}*\n\n📭 لا توجد حلقات حالياً."
-        keyboard = [[InlineKeyboardButton("⬅️ رجوع للمسلسلات", callback_data="all_series")]]
+        keyboard = [[InlineKeyboardButton("⬅️ رجوع", callback_data="all_series")]]
         await query.edit_message_text(
             message_text, 
             parse_mode='Markdown', 
@@ -414,7 +295,7 @@ async def show_series_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
             seasons[season] = []
         seasons[season].append((ep_id, ep_num, msg_id, channel_id))
     
-    # بناء النص
+    # بناء النص - استخدم اسم متغير مختلف عن `text`
     message_text = f"🎬 *{series_name}*\n\n"
     keyboard = []
     
@@ -441,23 +322,24 @@ async def show_series_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # أزرار التنقل
     keyboard.append([
-        InlineKeyboardButton("⬅️ رجوع للمسلسلات", callback_data="all_series"),
+        InlineKeyboardButton("⬅️ رجوع", callback_data="all_series"),
         InlineKeyboardButton("🏠 الرئيسية", callback_data="home")
     ])
     
     await query.edit_message_text(
-        message_text,
+        message_text,  # استخدم المتغير الجديد message_text
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYPE, episode_id):
-    """عرض تفاصيل حلقة مع روابط"""
+    """عرض تفاصيل حلقة مع روابط - معدل لاستخدام رابط الدعوة"""
     query = update.callback_query
     
     try:
         with engine.connect() as conn:
-            result = conn.execute(text("""
+            from sqlalchemy import text as sql_text
+            result = conn.execute(sql_text("""
                 SELECT e.season, e.episode_number, e.telegram_message_id,
                        s.name as series_name, e.series_id
                 FROM episodes e
@@ -474,8 +356,9 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
     
     season, episode_num, msg_id, series_name, series_id = result
     
-    # بناء الرابط
+    # 🔧 بناء الرابط باستخدام رابط الدعوة الثابت
     if msg_id:
+        # استخدم رابط الدعوة الخاص بك هنا مباشرة
         episode_link = f"https://t.me/ShoofFilm/{msg_id}"
         link_text = f"🔗 [رابط الحلقة في القناة]({episode_link})"
     else:
@@ -505,7 +388,6 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=InlineKeyboardMarkup(keyboard),
         disable_web_page_preview=False
     )
-
 # ==============================
 # 5. الدالة الرئيسية
 # ==============================
@@ -516,13 +398,12 @@ def main():
     
     # إضافة Handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("series", lambda u, c: show_series(u, c, sort_by="id_asc")))
+    application.add_handler(CommandHandler("series", show_series))
     application.add_handler(CommandHandler("debug", debug_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     
     # تشغيل البوت
     print("🤖 البوت يعمل باستخدام Polling...")
-    print("📊 المسلسلات مرتبة حسب ID تصاعدياً (الأقدم أولاً)")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
