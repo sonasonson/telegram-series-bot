@@ -95,7 +95,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /start"""
     keyboard = [
         [InlineKeyboardButton("📺 جميع المسلسلات", callback_data='all_series')],
-        [InlineKeyboardButton("⭐ المفضلة", callback_data='favorites')],
         [InlineKeyboardButton("🔍 بحث سريع", switch_inline_query_current_chat='')],
     ]
     
@@ -115,24 +114,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /debug - فحص حالة النظام
     """
     
-    await update.message.reply_text(
-        welcome_text,
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            welcome_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            welcome_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
 
 async def show_series(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /series - عرض جميع المسلسلات"""
+    """عرض جميع المسلسلات (يعمل مع /series ومع الزر)"""
     if not engine:
-        await update.message.reply_text("❌ قاعدة البيانات غير متاحة حالياً.")
+        error_msg = "❌ قاعدة البيانات غير متاحة حالياً."
+        if update.callback_query:
+            await update.callback_query.edit_message_text(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
         return
     
     series_list = await get_all_series()
     
     if not series_list:
-        await update.message.reply_text("📭 لا توجد مسلسلات حالياً.")
+        no_data_msg = "📭 لا توجد مسلسلات حالياً."
+        if update.callback_query:
+            await update.callback_query.edit_message_text(no_data_msg)
+        else:
+            await update.message.reply_text(no_data_msg)
         return
     
+    # بناء النص
     text = "📺 *قائمة المسلسلات*\n\n"
     keyboard = []
     
@@ -141,18 +156,28 @@ async def show_series(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• {name} ({episode_count} حلقة)\n"
         keyboard.append([
             InlineKeyboardButton(
-                f"📺 {name} ({episode_count})",
+                f"📺 {name[:15]} ({episode_count})",
                 callback_data=f"series_{series_id}"
             )
         ])
     
+    # أزرار التنقل
     keyboard.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="home")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
-        text,
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    # الإرسال حسب مصدر الطلب
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /debug - فحص حالة النظام"""
@@ -201,15 +226,16 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة أزرار InlineKeyboard"""
     query = update.callback_query
-    await query.answer()
+    await query.answer()  # مهم لإعلام تليجرام
     
     data = query.data
     
     if data == 'home':
-        await start(query, context)
+        await start(update, context)
         return
     
     elif data == 'all_series':
+        # هذا هو التصحيح المهم: استدعاء show_series
         await show_series(update, context)
         return
     
@@ -324,12 +350,15 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
     season, episode_num, msg_id, channel_id, series_name = result
     
     # تنظيف معرف القناة من @ إذا كان موجوداً
-    if channel_id.startswith("@"):
+    if channel_id and channel_id.startswith("@"):
         channel_id = channel_id[1:]
-    elif "t.me/" in channel_id:
+    elif channel_id and "t.me/" in channel_id:
         channel_id = channel_id.split("t.me/")[1].replace("@", "")
     
-    # إنشاء رابط الحلقة
+    # إنشاء رابط الحلقة (استخدم المعرف الحالي إذا كان غير متوفر)
+    if not channel_id:
+        channel_id = "ShoofFilm"  # استخدام معرف افتراضي
+    
     episode_link = f"https://t.me/{channel_id}/{msg_id}"
     
     text = (
