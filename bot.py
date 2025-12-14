@@ -56,12 +56,15 @@ async def get_all_series():
     try:
         with engine.connect() as conn:
             # جلب المسلسلات مع عدد حلقات كل منها
+            # تم تعديل ORDER BY لإضافة ترتيب حسب تاريخ الإنشاء (الأقدم أولاً، الأحدث آخراً)
             result = conn.execute(text("""
-                SELECT s.id, s.name, COUNT(e.id) as episode_count
+                SELECT s.id, s.name, COUNT(e.id) as episode_count, 
+                       s.created_at  -- إضافة العمود للترتيب
                 FROM series s
                 LEFT JOIN episodes e ON s.id = e.series_id
-                GROUP BY s.id, s.name
-                ORDER BY s.name
+                GROUP BY s.id, s.name, s.created_at
+                ORDER BY s.created_at ASC, s.name ASC
+                -- ASC: الأقدم أولاً، الأحدث في الأسفل
             """))
             return result.fetchall()
     except Exception as e:
