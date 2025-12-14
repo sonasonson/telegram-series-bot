@@ -110,8 +110,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /start - مُعدل ليعمل في جميع الحالات"""
     keyboard = [
         [InlineKeyboardButton("📺 جميع المسلسلات", callback_data='all_series')],
-        [InlineKeyboardButton("🔍 بحث سريع", switch_inline_query_current_chat='')],
-    ]
+            ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
