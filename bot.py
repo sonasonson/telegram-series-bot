@@ -359,7 +359,7 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
     # 🔧 بناء الرابط باستخدام رابط الدعوة الثابت
     if msg_id:
         # استخدم رابط الدعوة الخاص بك هنا مباشرة
-        episode_link = f"https://t.me/+tjivLKBadS01NTg0/{msg_id}"
+        episode_link = f"https://t.me/ShoofFilm/{msg_id}"
         link_text = f"🔗 [رابط الحلقة في القناة]({episode_link})"
     else:
         episode_link = None
