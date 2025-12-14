@@ -339,9 +339,10 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         with engine.connect() as conn:
             from sqlalchemy import text as sql_text
+            # جلب بيانات الحلقة مع series_id
             result = conn.execute(sql_text("""
                 SELECT e.season, e.episode_number, e.telegram_message_id,
-                       e.telegram_channel_id, s.name as series_name
+                       e.telegram_channel_id, s.name as series_name, e.series_id
                 FROM episodes e
                 JOIN series s ON e.series_id = s.id
                 WHERE e.id = :episode_id
@@ -354,34 +355,47 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("❌ الحلقة غير موجودة.")
         return
     
-    season, episode_num, msg_id, channel_id, series_name = result
+    season, episode_num, msg_id, channel_id, series_name, series_id = result
     
-    # تنظيف معرف القناة من @ إذا كان موجوداً
-    if channel_id and channel_id.startswith("@"):
-        channel_id = channel_id[1:]
-    elif channel_id and "t.me/" in channel_id:
-        channel_id = channel_id.split("t.me/")[1].replace("@", "")
+    # 🔧 **إصلاح رابط الحلقة**
+    # 1. استبدل رابط الدعوة بمعرف القناة الحقيقي
+    if channel_id and ("t.me/+" in channel_id or "https://t.me/+" in channel_id):
+        channel_id = "@ShoofFilm"  # استخدام المعرف الحقيقي
     
-    # إنشاء رابط الحلقة (استخدم المعرف الحالي إذا كان غير متوفر)
-    if not channel_id:
-        channel_id = "ShoofFilm"  # استخدام معرف افتراضي
+    # 2. تنظيف المعرف
+    clean_channel_id = channel_id
+    if clean_channel_id:
+        if clean_channel_id.startswith("@"):
+            clean_channel_id = clean_channel_id[1:]
+        elif "t.me/" in clean_channel_id:
+            clean_channel_id = clean_channel_id.split("t.me/")[1].replace("@", "")
     
-    episode_link = f"https://t.me/{channel_id}/{msg_id}"
+    # 3. بناء الرابط
+    if clean_channel_id and msg_id:
+        episode_link = f"https://t.me/{clean_channel_id}/{msg_id}"
+        link_text = f"🔗 [رابط الحلقة في القناة]({episode_link})"
+    else:
+        episode_link = None
+        link_text = "⚠️ تعذر إنشاء رابط للحلقة."
     
     message_text = (
         f"🎬 *{series_name}*\n"
         f"📁 الموسم {season} - الحلقة {episode_num}\n\n"
-        f"🔗 [رابط الحلقة في القناة]({episode_link})"
+        f"{link_text}"
     )
     
-    keyboard = [
-        [InlineKeyboardButton("▶️ مشاهدة الحلقة", url=episode_link)],
-        [InlineKeyboardButton("⬅️ رجوع للمسلسل", callback_data=f"series_{episode_id}")],
-        [InlineKeyboardButton("🏠 الرئيسية", callback_data="home")]
-    ]
+    # 🔧 **إصلاح زر الرجوع (استخدم series_id بدلاً من episode_id)**
+    keyboard = []
+    if episode_link:
+        keyboard.append([InlineKeyboardButton("▶️ مشاهدة الحلقة", url=episode_link)])
+    
+    keyboard.append([
+        InlineKeyboardButton("⬅️ رجوع للمسلسل", callback_data=f"series_{series_id}"),  # <-- صححت هنا
+        InlineKeyboardButton("🏠 الرئيسية", callback_data="home")
+    ])
     
     await query.edit_message_text(
-        message_text,  # استخدم المتغير الجديد message_text
+        message_text,
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard),
         disable_web_page_preview=False
