@@ -47,37 +47,23 @@ if DATABASE_URL:
 # 2. دوال المساعدة للتعامل مع قاعدة البيانات
 # ==============================
 async def get_all_series():
-    """جلب جميع المسلسلات من قاعدة البيانات مرتبة حسب الأقدم (الأقدم أولاً)"""
+    """جلب جميع المسلسلات من قاعدة البيانات مرتبة حسب id (الأقدم أولاً)"""
     if not engine:
         return []
     
     try:
         with engine.connect() as conn:
-            # تغيير الترتيب إلى ASC لجعل الجديد في الأسفل
             result = conn.execute(text("""
                 SELECT s.id, s.name, COUNT(e.id) as episode_count
                 FROM series s
                 LEFT JOIN episodes e ON s.id = e.series_id
-                GROUP BY s.id, s.name, s.created_at
-                ORDER BY s.created_at ASC, s.id ASC
+                GROUP BY s.id, s.name
+                ORDER BY s.id ASC  -- ترتيب حسب id تصاعدياً
             """))
             return result.fetchall()
     except Exception as e:
         print(f"❌ خطأ في جلب المسلسلات: {e}")
-        # محاولة ترتيب أبسط
-        try:
-            with engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT s.id, s.name, COUNT(e.id) as episode_count
-                    FROM series s
-                    LEFT JOIN episodes e ON s.id = e.series_id
-                    GROUP BY s.id, s.name
-                    ORDER BY s.id ASC
-                """))
-                return result.fetchall()
-        except Exception as e2:
-            print(f"❌ خطأ في الاستعلام البديل: {e2}")
-            return []
+        return []
 
 async def get_series_alphabetical():
     """جلب جميع المسلسلات من قاعدة البيانات مرتبة أبجدياً"""
@@ -98,8 +84,8 @@ async def get_series_alphabetical():
         print(f"❌ خطأ في جلب المسلسلات أبجدياً: {e}")
         return []
 
-async def get_series_newest_first():
-    """جلب جميع المسلسلات من قاعدة البيانات مرتبة حسب الأحدث (الأحدث أولاً)"""
+async def get_series_by_id_desc():
+    """جلب جميع المسلسلات من قاعدة البيانات مرتبة حسب id تنازلياً (الأحدث أولاً)"""
     if not engine:
         return []
     
@@ -109,26 +95,13 @@ async def get_series_newest_first():
                 SELECT s.id, s.name, COUNT(e.id) as episode_count
                 FROM series s
                 LEFT JOIN episodes e ON s.id = e.series_id
-                GROUP BY s.id, s.name, s.created_at
-                ORDER BY s.created_at DESC, s.id DESC
+                GROUP BY s.id, s.name
+                ORDER BY s.id DESC  -- ترتيب حسب id تنازلياً
             """))
             return result.fetchall()
     except Exception as e:
-        print(f"❌ خطأ في جلب المسلسلات (الأحدث أولاً): {e}")
-        # محاولة ترتيب أبسط
-        try:
-            with engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT s.id, s.name, COUNT(e.id) as episode_count
-                    FROM series s
-                    LEFT JOIN episodes e ON s.id = e.series_id
-                    GROUP BY s.id, s.name
-                    ORDER BY s.id DESC
-                """))
-                return result.fetchall()
-        except Exception as e2:
-            print(f"❌ خطأ في الاستعلام البديل: {e2}")
-            return []
+        print(f"❌ خطأ في جلب المسلسلات (حسب id تنازلياً): {e}")
+        return []
 
 async def get_series_episodes(series_id):
     """جلب حلقات مسلسل محدد"""
@@ -202,7 +175,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
 
-async def show_series(update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by="oldest"):
+async def show_series(update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by="id_asc"):
     """عرض جميع المسلسلات مع خيارات الترتيب"""
     if not engine:
         error_msg = "❌ قاعدة البيانات غير متاحة حالياً."
@@ -219,20 +192,20 @@ async def show_series(update: Update, context: ContextTypes.DEFAULT_TYPE, sort_b
         series_list = await get_series_alphabetical()
         title = "📺 *قائمة المسلسلات (أبجدي)*\n\n"
         sort_button_text = "🔤 أبجدي"
-        other_sort_text = "📅 الأحدث"
-        other_sort_data = "sort_newest"
-    elif sort_by == "newest":
-        series_list = await get_series_newest_first()
+        other_sort_text = "🆔 بالرقم"
+        other_sort_data = "sort_id_asc"
+    elif sort_by == "id_desc":
+        series_list = await get_series_by_id_desc()
         title = "📺 *قائمة المسلسلات (الأحدث أولاً)*\n\n"
-        sort_button_text = "📅 الأحدث"
-        other_sort_text = ""
-        other_sort_data = "sort_oldest"
-    else:  # الافتراضي: الأقدم أولاً
+        sort_button_text = "🆔 الأحدث"
+        other_sort_text = "🆔 الأقدم"
+        other_sort_data = "sort_id_asc"
+    else:  # الافتراضي: حسب id تصاعدياً (الأقدم أولاً)
         series_list = await get_all_series()
-        title = "📺 *قائمة المسلسلات (الأقدم أولاً)*\n\n"
-        sort_button_text = "📅 الأقدم"
-        other_sort_text = ""
-        other_sort_data = "sort_newest"
+        title = "📺 *قائمة المسلسلات (حسب الإضافة)*\n\n"
+        sort_button_text = "🆔 الأقدم"
+        other_sort_text = "🆔 الأحدث"
+        other_sort_data = "sort_id_desc"
     
     if not series_list:
         no_data_msg = "📭 لا توجد مسلسلات حالياً."
@@ -271,9 +244,10 @@ async def show_series(update: Update, context: ContextTypes.DEFAULT_TYPE, sort_b
     keyboard.append([
         InlineKeyboardButton(sort_button_text, callback_data=f"sort_{sort_by}"),
         InlineKeyboardButton(other_sort_text, callback_data=other_sort_data),
-        InlineKeyboardButton("🔤 أبجدي" if sort_by != "alphabetical" else "📅 ترتيب", 
-                           callback_data="sort_alphabetical" if sort_by != "alphabetical" else "sort_oldest")
     ])
+    
+    if sort_by != "alphabetical":
+        keyboard.append([InlineKeyboardButton("🔤 أبجدي", callback_data="sort_alphabetical")])
     
     keyboard.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="home")])
     
@@ -313,36 +287,34 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # إحصائيات المسلسلات
             series_result = conn.execute(text("SELECT COUNT(*) FROM series")).fetchone()
             episodes_result = conn.execute(text("SELECT COUNT(*) FROM episodes")).fetchone()
-            sample_result = conn.execute(text("SELECT name FROM series ORDER BY id ASC LIMIT 3")).fetchall()
             
-            # أحدث مسلسلات مضافة
-            newest_series = conn.execute(text("""
-                SELECT name FROM series 
-                ORDER BY id DESC 
-                LIMIT 3
+            # أول 5 مسلسلات (حسب الترتيب)
+            first_series = conn.execute(text("""
+                SELECT id, name FROM series 
+                ORDER BY id ASC 
+                LIMIT 5
             """)).fetchall()
             
-            # أقدم مسلسلات مضافة
-            oldest_series = conn.execute(text("""
-                SELECT name FROM series 
-                ORDER BY id ASC 
-                LIMIT 3
+            # آخر 5 مسلسلات مضافة
+            last_series = conn.execute(text("""
+                SELECT id, name FROM series 
+                ORDER BY id DESC 
+                LIMIT 5
             """)).fetchall()
         
         series_count = series_result[0] if series_result else 0
         episodes_count = episodes_result[0] if episodes_result else 0
-        sample_names = [row[0] for row in sample_result] if sample_result else ["لا يوجد"]
-        newest_names = [row[0] for row in newest_series] if newest_series else ["لا يوجد"]
-        oldest_names = [row[0] for row in oldest_series] if oldest_series else ["لا يوجد"]
+        
+        first_series_text = "\n".join([f"  {row[0]}. {row[1]}" for row in first_series])
+        last_series_text = "\n".join([f"  {row[0]}. {row[1]}" for row in last_series])
         
         reply_text = (
             f"📊 **فحص النظام:**\n"
             f"• قاعدة البيانات: {'✅ متصلة' if engine else '❌ غير متصلة'}\n"
             f"• عدد المسلسلات: `{series_count}`\n"
-            f"• عدد الحلقات: `{episodes_count}`\n"
-            f"• أول 3 مسلسلات (حسب الترتيب): {', '.join(sample_names)}\n"
-            f"• أحدث 3 مسلسلات مضافة: {', '.join(newest_names)}\n"
-            f"• أقدم 3 مسلسلات مضافة: {', '.join(oldest_names)}"
+            f"• عدد الحلقات: `{episodes_count}`\n\n"
+            f"• **أول 5 مسلسلات (حسب ID):**\n{first_series_text}\n\n"
+            f"• **آخر 5 مسلسلات (حسب ID):**\n{last_series_text}"
         )
         
         await update.message.reply_text(reply_text, parse_mode='Markdown')
@@ -369,15 +341,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         elif data == 'all_series':
-            await show_series(update, context, sort_by="oldest")
+            await show_series(update, context, sort_by="id_asc")
             return
         
-        elif data == 'sort_date' or data == 'sort_oldest':
-            await show_series(update, context, sort_by="oldest")
+        elif data == 'sort_id_asc':
+            await show_series(update, context, sort_by="id_asc")
             return
         
-        elif data == 'sort_newest':
-            await show_series(update, context, sort_by="newest")
+        elif data == 'sort_id_desc':
+            await show_series(update, context, sort_by="id_desc")
             return
         
         elif data == 'sort_alphabetical':
@@ -544,13 +516,13 @@ def main():
     
     # إضافة Handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("series", lambda u, c: show_series(u, c, sort_by="oldest")))
+    application.add_handler(CommandHandler("series", lambda u, c: show_series(u, c, sort_by="id_asc")))
     application.add_handler(CommandHandler("debug", debug_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     
     # تشغيل البوت
     print("🤖 البوت يعمل باستخدام Polling...")
-    print("📊 المسلسلات ستظهر بترتيب الأقدم أولاً (الجديد في الأسفل)")
+    print("📊 المسلسلات مرتبة حسب ID تصاعدياً (الأقدم أولاً)")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
