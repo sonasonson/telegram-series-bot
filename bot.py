@@ -333,16 +333,15 @@ async def show_series_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYPE, episode_id):
-    """عرض تفاصيل حلقة مع روابط"""
+    """عرض تفاصيل حلقة مع روابط - معدل لاستخدام رابط الدعوة"""
     query = update.callback_query
     
     try:
         with engine.connect() as conn:
             from sqlalchemy import text as sql_text
-            # جلب بيانات الحلقة مع series_id
             result = conn.execute(sql_text("""
                 SELECT e.season, e.episode_number, e.telegram_message_id,
-                       e.telegram_channel_id, s.name as series_name, e.series_id
+                       s.name as series_name, e.series_id
                 FROM episodes e
                 JOIN series s ON e.series_id = s.id
                 WHERE e.id = :episode_id
@@ -355,24 +354,12 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("❌ الحلقة غير موجودة.")
         return
     
-    season, episode_num, msg_id, channel_id, series_name, series_id = result
+    season, episode_num, msg_id, series_name, series_id = result
     
-    # 🔧 **إصلاح رابط الحلقة**
-    # 1. استبدل رابط الدعوة بمعرف القناة الحقيقي
-    if channel_id and ("t.me/+" in channel_id or "https://t.me/+" in channel_id):
-        channel_id = "@ShoofFilm"  # استخدام المعرف الحقيقي
-    
-    # 2. تنظيف المعرف
-    clean_channel_id = channel_id
-    if clean_channel_id:
-        if clean_channel_id.startswith("@"):
-            clean_channel_id = clean_channel_id[1:]
-        elif "t.me/" in clean_channel_id:
-            clean_channel_id = clean_channel_id.split("t.me/")[1].replace("@", "")
-    
-    # 3. بناء الرابط
-    if clean_channel_id and msg_id:
-        episode_link = f"https://t.me/{clean_channel_id}/{msg_id}"
+    # 🔧 بناء الرابط باستخدام رابط الدعوة الثابت
+    if msg_id:
+        # استخدم رابط الدعوة الخاص بك هنا مباشرة
+        episode_link = f"https://t.me/+tjivLKBadS01NTg0/{msg_id}"
         link_text = f"🔗 [رابط الحلقة في القناة]({episode_link})"
     else:
         episode_link = None
@@ -381,16 +368,17 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
     message_text = (
         f"🎬 *{series_name}*\n"
         f"📁 الموسم {season} - الحلقة {episode_num}\n\n"
-        f"{link_text}"
+        f"{link_text}\n\n"
+        f"*ملاحظة:* تأكد من أنك منضم للقناة لمشاهدة الحلقة."
     )
     
-    # 🔧 **إصلاح زر الرجوع (استخدم series_id بدلاً من episode_id)**
+    # بناء لوحة المفاتيح
     keyboard = []
     if episode_link:
         keyboard.append([InlineKeyboardButton("▶️ مشاهدة الحلقة", url=episode_link)])
     
     keyboard.append([
-        InlineKeyboardButton("⬅️ رجوع للمسلسل", callback_data=f"series_{series_id}"),  # <-- صححت هنا
+        InlineKeyboardButton("⬅️ رجوع للمسلسل", callback_data=f"series_{series_id}"),
         InlineKeyboardButton("🏠 الرئيسية", callback_data="home")
     ])
     
@@ -400,7 +388,6 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=InlineKeyboardMarkup(keyboard),
         disable_web_page_preview=False
     )
-
 # ==============================
 # 5. الدالة الرئيسية
 # ==============================
