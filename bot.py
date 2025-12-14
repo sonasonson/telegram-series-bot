@@ -61,7 +61,7 @@ async def get_all_series():
                 FROM series s
                 LEFT JOIN episodes e ON s.id = e.series_id
                 GROUP BY s.id, s.name
-                ORDER BY s.id ASC  -- الجديد في الأسفل (الأصغر ID أولاً)
+                ORDER BY s.id DESC  -- الجديد في الأسفل (الأصغر ID أولاً)
             """))
             return result.fetchall()
     except Exception as e:
