@@ -14,7 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 # ==============================
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
-CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "https://t.me/+tjivLKBadS01NTg0")
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "https://t.me/ShoofFilm")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 STRING_SESSION = os.environ.get("STRING_SESSION", "")
 IMPORT_HISTORY = os.environ.get("IMPORT_HISTORY", "false").lower() == "true"  # تفعيل/تعطيل الاستيراد
