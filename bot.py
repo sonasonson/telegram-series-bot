@@ -57,11 +57,14 @@ async def get_all_series():
         with engine.connect() as conn:
             # جلب المسلسلات مع عدد حلقات كل منها
             result = conn.execute(text("""
-                SELECT s.id, s.name, COUNT(e.id) as episode_count
+                SELECT s.id, s.name, 
+                       COUNT(e.id) as episode_count,
+                       COALESCE(s.created_at, s.added_at, NOW()) as order_date
                 FROM series s
                 LEFT JOIN episodes e ON s.id = e.series_id
-                GROUP BY s.id, s.name
-                ORDER BY s.id DESC  -- الجديد في الأسفل (الأصغر ID أولاً)
+                GROUP BY s.id, s.name, order_date
+                ORDER BY MIN(COALESCE(s.created_at, s.added_at, e.added_at, NOW())) ASC
+                -- الجديد في الأسفل
             """))
             return result.fetchall()
     except Exception as e:
