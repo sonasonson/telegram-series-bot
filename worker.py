@@ -89,6 +89,14 @@ def clean_name(name):
     
     return name
 
+def extract_numbers_from_name(name):
+    """استخراج الأرقام من الاسم (مثل 13 من 'يوم-13')"""
+    # البحث عن نمط رقم في النهاية مع أو بدون شرطة
+    match = re.search(r'[-_]?(\d+)$', name)
+    if match:
+        return int(match.group(1))
+    return None
+
 def parse_content_info(message_text):
     """تحليل نص الرسالة لاستخراج المعلومات."""
     if not message_text:
@@ -96,19 +104,46 @@ def parse_content_info(message_text):
     
     text_cleaned = message_text.strip()
     
-    # تحديد النوع (مسلسل أو فيلم) بناءً على وجود كلمات محددة
-    content_type = 'series'  # الافتراضي هو مسلسل
-    
     # =============================================
-    # 1. البحث عن نمط الأفلام: "فيلم وش في وش 1"
+    # 1. البحث عن نمط الأفلام: "فيلم يوم-13" أو "فيلم يوم 13"
     # =============================================
-    film_pattern = r'^(.*?فيلم.*?)\s+(\d+)$'
-    match = re.search(film_pattern, text_cleaned, re.IGNORECASE)
+    # نمط 1: "فيلم يوم-13" أو "فيلم يوم_13"
+    film_pattern_dash = r'^فيلم\s+(.+?)[-_](\d+)$'
+    match = re.search(film_pattern_dash, text_cleaned, re.IGNORECASE)
     if match:
         content_type = 'movie'
         raw_name = match.group(1).strip()
-        season_num = int(match.group(2))  # الرقم يعتبر موسم للفيلم
+        season_num = int(match.group(2))  # الرقم بعد الشرطة يعتبر موسم
         episode_num = 1  # الأفليس ليس لها حلقات
+        clean_name_text = clean_name(raw_name)
+        return clean_name_text, content_type, season_num, episode_num
+    
+    # نمط 2: "فيلم يوم 13"
+    film_pattern_space = r'^فيلم\s+(.+?)\s+(\d+)$'
+    match = re.search(film_pattern_space, text_cleaned, re.IGNORECASE)
+    if match:
+        content_type = 'movie'
+        raw_name = match.group(1).strip()
+        season_num = int(match.group(2))  # الرقم بعد المسافة يعتبر موسم
+        episode_num = 1
+        clean_name_text = clean_name(raw_name)
+        return clean_name_text, content_type, season_num, episode_num
+    
+    # نمط 3: "فيلم [اسم]" بدون رقم
+    film_pattern_name_only = r'^فيلم\s+(.+)$'
+    match = re.search(film_pattern_name_only, text_cleaned, re.IGNORECASE)
+    if match:
+        content_type = 'movie'
+        raw_name = match.group(1).strip()
+        # محاولة استخراج رقم من الاسم نفسه (مثل "يوم-13")
+        extracted_num = extract_numbers_from_name(raw_name)
+        if extracted_num:
+            # إزالة الرقم من الاسم
+            raw_name = re.sub(r'[-_]?\d+$', '', raw_name).strip()
+            season_num = extracted_num
+        else:
+            season_num = 1  # موسم افتراضي
+        episode_num = 1
         clean_name_text = clean_name(raw_name)
         return clean_name_text, content_type, season_num, episode_num
     
@@ -141,7 +176,7 @@ def parse_content_info(message_text):
     # =============================================
     # 4. البحث عن نمط بسيط: "المحافظ 1"
     # =============================================
-    simple_pattern = r'^(.*?[^\d])\s+(\d+)$'
+    simple_pattern = r'^(.*?[^\d\s])\s+(\d+)$'
     match = re.search(simple_pattern, text_cleaned)
     if match:
         # محاولة التمييز بين المسلسل والفيلم
@@ -160,8 +195,50 @@ def parse_content_info(message_text):
         clean_name_text = clean_name(raw_name)
         return clean_name_text, content_type, season_num, episode_num
     
+    # =============================================
+    # 5. نمط المسلسل العربي: "مسلسل المحافظ الموسم 1 الحلقة 1"
+    # =============================================
+    arabic_series_pattern = r'^مسلسل\s+(.*?)\s+الموسم\s+(\d+)\s+الحلقة\s+(\d+)$'
+    match = re.search(arabic_series_pattern, text_cleaned, re.IGNORECASE)
+    if match:
+        content_type = 'series'
+        raw_name = match.group(1).strip()
+        season_num = int(match.group(2))
+        episode_num = int(match.group(3))
+        clean_name_text = clean_name(raw_name)
+        return clean_name_text, content_type, season_num, episode_num
+    
+    # =============================================
+    # 6. نمط المسلسل العربي بدون موسم: "مسلسل المحافظ الحلقة 1"
+    # =============================================
+    arabic_series_simple = r'^مسلسل\s+(.*?)\s+الحلقة\s+(\d+)$'
+    match = re.search(arabic_series_simple, text_cleaned, re.IGNORECASE)
+    if match:
+        content_type = 'series'
+        raw_name = match.group(1).strip()
+        season_num = 1
+        episode_num = int(match.group(2))
+        clean_name_text = clean_name(raw_name)
+        return clean_name_text, content_type, season_num, episode_num
+    
     # إذا لم يتطابق مع أي نمط
     print(f"⚠️ لم يتم التعرف على النمط للنص: {text_cleaned}")
+    
+    # محاولة أخيرة: إذا كان النص يحتوي على "فيلم" في البداية
+    if text_cleaned.lower().startswith('فيلم'):
+        content_type = 'movie'
+        raw_name = text_cleaned[4:].strip()  # إزالة "فيلم"
+        extracted_num = extract_numbers_from_name(raw_name)
+        if extracted_num:
+            raw_name = re.sub(r'[-_]?\d+$', '', raw_name).strip()
+            season_num = extracted_num
+        else:
+            season_num = 1
+        episode_num = 1
+        clean_name_text = clean_name(raw_name)
+        print(f"   ⚠️ معالجة كفيلم افتراضي: {clean_name_text}")
+        return clean_name_text, content_type, season_num, episode_num
+    
     return None, None, None, None
 
 def save_to_database(name, content_type, season_num, episode_num, telegram_msg_id, series_id=None):
@@ -237,6 +314,7 @@ async def import_channel_history(client, channel):
     
     imported_count = 0
     skipped_count = 0
+    error_count = 0
     
     try:
         # جمع جميع الرسائل أولاً
@@ -253,17 +331,25 @@ async def import_channel_history(client, channel):
             if not message.text:
                 continue
             
-            name, content_type, season_num, episode_num = parse_content_info(message.text)
-            if name and content_type and episode_num:
-                if save_to_database(name, content_type, season_num, episode_num, message.id):
-                    imported_count += 1
+            try:
+                name, content_type, season_num, episode_num = parse_content_info(message.text)
+                if name and content_type and episode_num:
+                    if save_to_database(name, content_type, season_num, episode_num, message.id):
+                        imported_count += 1
+                    else:
+                        skipped_count += 1
                 else:
-                    skipped_count += 1
+                    print(f"⚠️ لم يتم تحليل الرسالة: {message.text[:50]}...")
+                    error_count += 1
+            except Exception as e:
+                print(f"❌ خطأ في معالجة الرسالة {message.id}: {e}")
+                error_count += 1
         
         print("="*50)
         print(f"✅ اكتمل الاستيراد!")
         print(f"   - تم استيراد: {imported_count} عنصر جديد")
         print(f"   - تم تخطي: {skipped_count} عنصر (موجود مسبقاً)")
+        print(f"   - فشل تحليل: {error_count} رسالة")
         print("="*50)
         
     except Exception as e:
