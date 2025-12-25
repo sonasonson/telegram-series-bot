@@ -18,7 +18,6 @@ CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "https://t.me/ShoofFilm")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 STRING_SESSION = os.environ.get("STRING_SESSION", "")
 IMPORT_HISTORY = os.environ.get("IMPORT_HISTORY", "false").lower() == "true"  # تفعيل/تعطيل الاستيراد
-DEFAULT_SERIES = os.environ.get("DEFAULT_SERIES", "المسلسل الافتراضي")  # اسم المسلسل الافتراضي
 
 # تحقق من وجود المتغيرات الأساسية
 if not all([API_ID, API_HASH, DATABASE_URL, STRING_SESSION]):
@@ -49,7 +48,8 @@ try:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS series (
                 id SERIAL PRIMARY KEY,
-                name VARCHAR(255) UNIQUE NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                type VARCHAR(10) DEFAULT 'series',  -- 'series' أو 'movie'
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
@@ -64,143 +64,141 @@ try:
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        # إنشاء فهرس لتسريع البحث
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_series_name_type ON series(name, type)"))
     print("✅ تم التحقق من هياكل الجداول.")
 except Exception as e:
     print(f"⚠️ ملاحظة حول الجداول: {e}")
 
 # ==============================
-# 4. إضافة المسلسل الافتراضي (ID:1)
+# 4. دوال المساعدة (التحليل والحفظ)
 # ==============================
-def add_default_series():
-    """إضافة المسلسل الافتراضي برقم ID:1 إذا لم يكن موجوداً"""
-    try:
-        with engine.begin() as conn:
-            # تحقق مما إذا كان الجدول يحتوي على أي مسلسلات
-            result = conn.execute(
-                text("SELECT COUNT(*) FROM series")
-            ).fetchone()
-            
-            if result and result[0] == 0:
-                # إدخال المسلسل الافتراضي مع ID محدد (1)
-                conn.execute(
-                    text("""
-                        INSERT INTO series (id, name) 
-                        VALUES (1, :name)
-                        ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
-                    """),
-                    {"name": DEFAULT_SERIES}
-                )
-                print(f"✅ تمت إضافة المسلسل الافتراضي (ID:1): {DEFAULT_SERIES}")
-            else:
-                # تحقق مما إذا كان المسلسل الافتراضي موجوداً بالفعل
-                result = conn.execute(
-                    text("SELECT id FROM series WHERE id = 1")
-                ).fetchone()
-                
-                if not result:
-                    # إذا كان هناك مسلسلات أخرى لكن ليس هناك ID 1
-                    # سنقوم بإضافة المسلسل الافتراضي مع ID محدد
-                    conn.execute(
-                        text("""
-                            INSERT INTO series (id, name) 
-                            VALUES (1, :name)
-                        """),
-                        {"name": DEFAULT_SERIES}
-                    )
-                    print(f"✅ تمت إضافة المسلسل الافتراضي (ID:1): {DEFAULT_SERIES}")
-                else:
-                    print(f"✅ المسلسل الافتراضي (ID:1) موجود بالفعل")
-                    
-        return True
-        
-    except SQLAlchemyError as e:
-        print(f"❌ خطأ في إضافة المسلسل الافتراضي: {e}")
-        return False
+def clean_name(name):
+    """تنظيف الاسم من كلمات 'مسلسل' و'فيلم' والأرقام في النهاية."""
+    if not name:
+        return name
+    
+    # إزالة كلمات "مسلسل" و"فيلم" من البداية
+    name = re.sub(r'^(مسلسل\s+|فيلم\s+)', '', name, flags=re.IGNORECASE)
+    
+    # إزالة كلمات "مسلسل" و"فيلم" من أي مكان (إذا كانت منفصلة)
+    name = re.sub(r'\s+(مسلسل|فيلم)\s+', ' ', name, flags=re.IGNORECASE)
+    
+    # تنظيف المسافات الزائدة
+    name = re.sub(r'\s+', ' ', name).strip()
+    
+    return name
 
-# ==============================
-# 5. دوال المساعدة (التحليل والحفظ)
-# ==============================
-def parse_series_info(message_text):
-    """تحليل نص الرسالة لاستخراج اسم المسلسل، الموسم، ورقم الحلقة."""
+def parse_content_info(message_text):
+    """تحليل نص الرسالة لاستخراج المعلومات."""
     if not message_text:
-        return None, None, None
+        return None, None, None, None
     
     text_cleaned = message_text.strip()
     
-    # =============================================
-    # 1. النمط الجديد: "المحافظ الموسم 1 الحلقة 1"
-    # =============================================
-    # هذا النمط يستخرج:
-    # - الاسم: كل شيء قبل "الموسم" (مع إزالة المسافات الزائدة)
-    # - الموسم: الرقم بعد "الموسم"
-    # - الحلقة: الرقم بعد "الحلقة"
-    pattern_new = r"^(.*?)\s+الموسم\s+(\d+)\s+الحلقة\s+(\d+)$"
+    # تحديد النوع (مسلسل أو فيلم) بناءً على وجود كلمات محددة
+    content_type = 'series'  # الافتراضي هو مسلسل
     
-    match = re.search(pattern_new, text_cleaned)
+    # =============================================
+    # 1. البحث عن نمط الأفلام: "فيلم وش في وش 1"
+    # =============================================
+    film_pattern = r'^(.*?فيلم.*?)\s+(\d+)$'
+    match = re.search(film_pattern, text_cleaned, re.IGNORECASE)
     if match:
-        series_name = match.group(1).strip()
-        season = int(match.group(2))
+        content_type = 'movie'
+        raw_name = match.group(1).strip()
+        season_num = int(match.group(2))  # الرقم يعتبر موسم للفيلم
+        episode_num = 1  # الأفليس ليس لها حلقات
+        clean_name_text = clean_name(raw_name)
+        return clean_name_text, content_type, season_num, episode_num
+    
+    # =============================================
+    # 2. البحث عن نمط المسلسل مع الموسم: "المحافظ الموسم 1 الحلقة 1"
+    # =============================================
+    series_season_pattern = r'^(.*?)\s+الموسم\s+(\d+)\s+الحلقة\s+(\d+)$'
+    match = re.search(series_season_pattern, text_cleaned)
+    if match:
+        content_type = 'series'
+        raw_name = match.group(1).strip()
+        season_num = int(match.group(2))
         episode_num = int(match.group(3))
-        return series_name, season, episode_num
+        clean_name_text = clean_name(raw_name)
+        return clean_name_text, content_type, season_num, episode_num
     
     # =============================================
-    # 2. النمط الثاني: "المحافظ الحلقة 1"
+    # 3. البحث عن نمط المسلسل بدون موسم: "المحافظ الحلقة 1"
     # =============================================
-    pattern_ep_only = r"^(.*?)\s+الحلقة\s+(\d+)$"
-    
-    match = re.search(pattern_ep_only, text_cleaned)
+    series_episode_pattern = r'^(.*?)\s+الحلقة\s+(\d+)$'
+    match = re.search(series_episode_pattern, text_cleaned)
     if match:
-        series_name = match.group(1).strip()
-        season = 1  # الموسم الافتراضي
+        content_type = 'series'
+        raw_name = match.group(1).strip()
+        season_num = 1  # موسم افتراضي
         episode_num = int(match.group(2))
-        return series_name, season, episode_num
+        clean_name_text = clean_name(raw_name)
+        return clean_name_text, content_type, season_num, episode_num
     
     # =============================================
-    # 3. النمط القديم: "المحافظ 1"
+    # 4. البحث عن نمط بسيط: "المحافظ 1"
     # =============================================
-    pattern_old = r"^(.*?[^\d])\s+(\d+)$"
-    
-    match = re.search(pattern_old, text_cleaned)
+    simple_pattern = r'^(.*?[^\d])\s+(\d+)$'
+    match = re.search(simple_pattern, text_cleaned)
     if match:
-        series_name = match.group(1).strip()
-        season = 1  # الموسم الافتراضي
-        episode_num = int(match.group(2))
-        return series_name, season, episode_num
-    
-    # =============================================
-    # 4. نمط إضافي: يمكن إضافة المزيد من الأنماط هنا
-    # =============================================
+        # محاولة التمييز بين المسلسل والفيلم
+        raw_name = match.group(1).strip()
+        
+        # إذا كان الاسم يحتوي على "فيلم" فهو فيلم
+        if 'فيلم' in raw_name.lower():
+            content_type = 'movie'
+            season_num = int(match.group(2))  # الرقم يعتبر موسم
+            episode_num = 1
+        else:
+            content_type = 'series'
+            season_num = 1  # موسم افتراضي
+            episode_num = int(match.group(2))  # الرقم يعتبر حلقة
+        
+        clean_name_text = clean_name(raw_name)
+        return clean_name_text, content_type, season_num, episode_num
     
     # إذا لم يتطابق مع أي نمط
     print(f"⚠️ لم يتم التعرف على النمط للنص: {text_cleaned}")
-    return None, None, None
+    return None, None, None, None
 
-def save_to_database(series_name, episode_num, telegram_msg_id, season=1, series_id=None):
-    """حفظ المسلسل والحلقة في قاعدة البيانات مع series_id"""
+def save_to_database(name, content_type, season_num, episode_num, telegram_msg_id, series_id=None):
+    """حفظ المحتوى في قاعدة البيانات."""
     try:
         with engine.begin() as conn:
-            # إذا لم يتم تمرير series_id، ابحث عنه أو أنشئه
+            # البحث عن المسلسل/الفيلم بنفس الاسم والنوع
             if not series_id:
                 result = conn.execute(
-                    text("SELECT id FROM series WHERE name = :name"),
-                    {"name": series_name}
+                    text("""
+                        SELECT id FROM series 
+                        WHERE name = :name AND type = :type
+                    """),
+                    {"name": name, "type": content_type}
                 ).fetchone()
                 
                 if not result:
-                    # إضافة مسلسل جديد
+                    # إضافة مسلسل/فيلم جديد
                     conn.execute(
-                        text("INSERT INTO series (name) VALUES (:name)"),
-                        {"name": series_name}
+                        text("""
+                            INSERT INTO series (name, type) 
+                            VALUES (:name, :type)
+                        """),
+                        {"name": name, "type": content_type}
                     )
                     # جلب الـ ID الجديد
                     result = conn.execute(
-                        text("SELECT id FROM series WHERE name = :name"),
-                        {"name": series_name}
+                        text("""
+                            SELECT id FROM series 
+                            WHERE name = :name AND type = :type
+                        """),
+                        {"name": name, "type": content_type}
                     ).fetchone()
                 
                 series_id = result[0]
             
-            # إضافة الحلقة مع series_id و channel_id الثابت
+            # إضافة الحلقة/الجزء
             conn.execute(
                 text("""
                     INSERT INTO episodes (series_id, season, episode_number, 
@@ -210,14 +208,18 @@ def save_to_database(series_name, episode_num, telegram_msg_id, season=1, series
                 """),
                 {
                     "sid": series_id,
-                    "season": season,
+                    "season": season_num,
                     "ep_num": episode_num,
                     "msg_id": telegram_msg_id,
-                    "channel": "@ShoofFilm"  # استخدم المعرف الثابت هنا
+                    "channel": "@ShoofFilm"
                 }
             )
             
-        print(f"✅ تمت إضافة/تحديث: {series_name} (ID:{series_id}) - الموسم {season} الحلقة {episode_num}")
+        type_arabic = "مسلسل" if content_type == 'series' else "فيلم"
+        if content_type == 'movie':
+            print(f"✅ تمت إضافة {type_arabic}: {name} - الجزء {season_num}")
+        else:
+            print(f"✅ تمت إضافة {type_arabic}: {name} - الموسم {season_num} الحلقة {episode_num}")
         return True
         
     except SQLAlchemyError as e:
@@ -225,50 +227,56 @@ def save_to_database(series_name, episode_num, telegram_msg_id, season=1, series
         return False
 
 # ==============================
-# 6. الدالة الجديدة: استيراد المسلسلات القديمة
+# 5. استيراد المسلسلات القديمة
 # ==============================
 async def import_channel_history(client, channel):
-    """استيراد جميع الرسائل القديمة من القناة."""
+    """استيراد جميع الرسائل القديمة من القناة بأقدمها أولاً."""
     print("\n" + "="*50)
-    print("📂 بدء استيراد المسلسلات القديمة من القناة...")
+    print("📂 بدء استيراد المحتوى القديم من القناة...")
     print("="*50)
     
     imported_count = 0
     skipped_count = 0
     
     try:
-        # جلب جميع الرسائل (يمكنك تعديل الحد إذا كانت القناة كبيرة)
+        # جمع جميع الرسائل أولاً
+        all_messages = []
         async for message in client.iter_messages(channel, limit=1000):
+            all_messages.append(message)
+        
+        # عكس الترتيب للحصول على الأقدم أولاً
+        all_messages.reverse()
+        
+        print(f"📊 تم جمع {len(all_messages)} رسالة للاستيراد...")
+        
+        for message in all_messages:
             if not message.text:
                 continue
             
-            series_name, season, episode_num = parse_series_info(message.text)
-            if series_name and episode_num:
-                if save_to_database(series_name, episode_num, message.id, season):
+            name, content_type, season_num, episode_num = parse_content_info(message.text)
+            if name and content_type and episode_num:
+                if save_to_database(name, content_type, season_num, episode_num, message.id):
                     imported_count += 1
                 else:
                     skipped_count += 1
         
         print("="*50)
         print(f"✅ اكتمل الاستيراد!")
-        print(f"   - تم استيراد: {imported_count} حلقة جديدة")
-        print(f"   - تم تخطي: {skipped_count} حلقة (موجودة مسبقاً)")
+        print(f"   - تم استيراد: {imported_count} عنصر جديد")
+        print(f"   - تم تخطي: {skipped_count} عنصر (موجود مسبقاً)")
         print("="*50)
         
     except Exception as e:
         print(f"❌ خطأ أثناء استيراد التاريخ: {e}")
 
 # ==============================
-# 7. الدالة الرئيسية لمراقبة القناة
+# 6. الدالة الرئيسية لمراقبة القناة
 # ==============================
 async def monitor_channel():
     """الدالة الرئيسية لمراقبة القناة وإضافة المحتوى."""
     print("="*50)
     print(f"🔍 بدء مراقبة القناة: {CHANNEL_USERNAME}")
     print("="*50)
-    
-    # إضافة المسلسل الافتراضي أولاً
-    add_default_series()
     
     client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
     
@@ -279,11 +287,11 @@ async def monitor_channel():
         channel = await client.get_entity(CHANNEL_USERNAME)
         print(f"✅ تم العثور على القناة: {channel.title}")
         
-        # استيراد المسلسلات القديمة إذا كان مفعلاً
+        # استيراد المحتوى القديم إذا كان مفعلاً
         if IMPORT_HISTORY:
             await import_channel_history(client, channel)
         else:
-            print("⚠️ استيراد المسلسلات القديمة معطل. لتفعيله، أضف IMPORT_HISTORY=true في متغيرات البيئة.")
+            print("⚠️ استيراد المحتوى القديم معطل. لتفعيله، أضف IMPORT_HISTORY=true في متغيرات البيئة.")
         
         # مراقبة الرسائل الجديدة
         @client.on(events.NewMessage(chats=channel))
@@ -291,12 +299,16 @@ async def monitor_channel():
             message = event.message
             if message.text:
                 print(f"📥 رسالة جديدة: {message.text[:50]}...")
-                series_name, season, episode_num = parse_series_info(message.text)
-                if series_name and episode_num:
-                    print(f"   تم التعرف على: {series_name} - الموسم {season} الحلقة {episode_num}")
-                    save_to_database(series_name, episode_num, message.id, season)
+                name, content_type, season_num, episode_num = parse_content_info(message.text)
+                if name and content_type and episode_num:
+                    type_arabic = "مسلسل" if content_type == 'series' else "فيلم"
+                    if content_type == 'movie':
+                        print(f"   تم التعرف على {type_arabic}: {name} - الجزء {season_num}")
+                    else:
+                        print(f"   تم التعرف على {type_arabic}: {name} - الموسم {season_num} الحلقة {episode_num}")
+                    save_to_database(name, content_type, season_num, episode_num, message.id)
         
-        print("\n🎯 جاهز لاستقبال المسلسلات الجديدة من القناة...")
+        print("\n🎯 جاهز لاستقبال المحتوى الجديد من القناة...")
         print("   (اضغط Ctrl+C في Railway لإيقاف المراقبة)\n")
         
         await client.run_until_disconnected()
@@ -308,8 +320,8 @@ async def monitor_channel():
         print("🛑 تم إيقاف مراقبة القناة.")
 
 # ==============================
-# 8. نقطة دخول البرنامج
+# 7. نقطة دخول البرنامج
 # ==============================
 if __name__ == "__main__":
-    print("🚀 بدء تشغيل Worker لمراقبة قناة المسلسلات...")
+    print("🚀 بدء تشغيل Worker لمراقبة قناة المسلسلات والأفلام...")
     asyncio.run(monitor_channel())
