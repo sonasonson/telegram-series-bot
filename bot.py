@@ -505,7 +505,6 @@ async def show_content_details(update: Update, context: ContextTypes.DEFAULT_TYP
     content_id, name, content_type = content_info
     episodes = await get_content_episodes(content_id)
     
-    type_arabic = "مسلسل" if content_type == 'series' else "فيلم"
     type_icon = "📺" if content_type == 'series' else "🎬"
     
     if not episodes:
@@ -518,7 +517,7 @@ async def show_content_details(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
     
-    # تجميع الحلقات حسب الموسم
+    # تجميع الحلقات حسب الموسم (للمسلسلات) أو الجزء (للأفلام)
     seasons = {}
     for ep in episodes:
         ep_id, season, ep_num, msg_id, channel_id = ep
@@ -526,45 +525,55 @@ async def show_content_details(update: Update, context: ContextTypes.DEFAULT_TYP
             seasons[season] = []
         seasons[season].append((ep_id, ep_num, msg_id, channel_id))
     
-    # إذا كان المحتوى من نوع مسلسل وكان له أكثر من موسم، نعرض قائمة المواسم
-    if content_type == 'series' and len(seasons) > 1:
-        message_text = f"{type_icon} *{name}*\n\nاختر الموسم:"
+    # إذا كان المحتوى له أكثر من موسم/جزء، نعرض قائمة المواسم/الأجزاء
+    if len(seasons) > 1:
+        if content_type == 'series':
+            message_text = f"{type_icon} *{name}*\n\nاختر الموسم:"
+            item_name = "الموسم"
+            item_icon = "📁"
+        else:  # movie
+            message_text = f"{type_icon} *{name}*\n\nاختر الجزء:"
+            item_name = "الجزء"
+            item_icon = "🎬"
+        
         keyboard = []
         for season_num in sorted(seasons.keys()):
-            # حساب عدد الحلقات في هذا الموسم
+            # حساب عدد الحلقات/الأجزاء في هذا الموسم/الجزء
             ep_count = len(seasons[season_num])
+            
+            if content_type == 'series':
+                count_text = f"{ep_count} حلقة"
+            else:
+                count_text = f"{ep_count} جزء"
+            
             keyboard.append([
                 InlineKeyboardButton(
-                    f"📁 الموسم {season_num} ({ep_count} حلقة)",
+                    f"{item_icon} {item_name} {season_num} ({count_text})",
                     callback_data=f"season_{content_id}_{season_num}"
                 )
             ])
     else:
-        # إذا كان فيلم أو مسلسل له موسم واحد فقط، نعرض الحلقات مباشرة
-        # للأفلام، نعرض الأجزاء (الموسم هنا يمثل الجزء)
-        if content_type == 'movie':
-            message_text = f"{type_icon} *{name}*\n\nاختر الجزء:"
-        else:
-            # للمسلسلات ذات الموسم الواحد
-            season_num = list(seasons.keys())[0] if seasons else 1
+        # إذا كان المحتوى له موسم/جزء واحد فقط، نعرض الحلقات/الأجزاء مباشرة
+        if content_type == 'series':
             message_text = f"{type_icon} *{name}*\n\nاختر الحلقة:"
+            item_name = "الحلقة"
+            item_icon = "▶️"
+        else:  # movie
+            message_text = f"{type_icon} *{name}*\n\nاختر الجزء:"
+            item_name = "الجزء"
+            item_icon = "🎬"
         
         keyboard = []
-        # نستخدم أول موسم (إذا كان مسلسل) أو كل الحلقات مجمعة في موسم واحد
+        # نستخدم أول موسم/جزء (إذا كان محتوى) أو كل الحلقات مجمعة في موسم/جزء واحد
         season_num = list(seasons.keys())[0] if seasons else 1
         season_episodes = seasons.get(season_num, [])
         
-        # تقسيم أزرار الحلقات (5 أزرار في كل صف)
+        # تقسيم أزرار الحلقات/الأجزاء (5 أزرار في كل صف)
         row_buttons = []
         for ep_id, ep_num, msg_id, channel_id in season_episodes:
-            if content_type == 'movie':
-                button_text = f"🎬 الجزء {ep_num}"
-            else:
-                button_text = f"الحلقة {ep_num}"
-            
             row_buttons.append(
                 InlineKeyboardButton(
-                    button_text,
+                    f"{item_icon} {item_name} {ep_num}",
                     callback_data=f"ep_{ep_id}"
                 )
             )
@@ -590,7 +599,7 @@ async def show_content_details(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 async def show_season_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE, content_id, season_num):
-    """عرض حلقات موسم محدد لمسلسل"""
+    """عرض حلقات/أجزاء موسم/جزء محدد"""
     query = update.callback_query
     
     # جلب معلومات المحتوى
@@ -603,26 +612,37 @@ async def show_season_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
     episodes = await get_content_episodes(content_id)
     
     if not episodes:
-        await query.edit_message_text("❌ لا توجد حلقات لهذا الموسم.")
+        await query.edit_message_text("❌ لا توجد حلقات/أجزاء لهذا الموسم/الجزء.")
         return
     
-    # تصفية الحلقات للموسم المحدد
+    # تصفية الحلقات للموسم/الجزء المحدد
     season_episodes = [ep for ep in episodes if ep[1] == season_num]
     
     if not season_episodes:
-        await query.edit_message_text(f"❌ لا توجد حلقات للموسم {season_num}.")
+        if content_type == 'series':
+            await query.edit_message_text(f"❌ لا توجد حلقات للموسم {season_num}.")
+        else:
+            await query.edit_message_text(f"❌ لا توجد أجزاء للجزء {season_num}.")
         return
     
-    message_text = f"📺 *{name}*\n📁 الموسم {season_num}\n\nاختر الحلقة:"
+    # بناء النص بناءً على نوع المحتوى
+    if content_type == 'series':
+        message_text = f"📺 *{name}*\n📁 الموسم {season_num}\n\nاختر الحلقة:"
+        item_name = "الحلقة"
+        item_icon = "▶️"
+    else:  # movie
+        message_text = f"🎬 *{name}*\n📁 الجزء {season_num}\n\nاختر الجزء:"
+        item_name = "الجزء"
+        item_icon = "🎬"
     
     keyboard = []
-    # تقسيم أزرار الحلقات (5 أزرار في كل صف)
+    # تقسيم أزرار الحلقات/الأجزاء (5 أزرار في كل صف)
     row_buttons = []
     for ep in season_episodes:
         ep_id, season, ep_num, msg_id, channel_id = ep
         row_buttons.append(
             InlineKeyboardButton(
-                f"الحلقة {ep_num}",
+                f"{item_icon} {item_name} {ep_num}",
                 callback_data=f"ep_{ep_id}"
             )
         )
@@ -635,7 +655,7 @@ async def show_season_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # أزرار التنقل
     keyboard.append([
-        InlineKeyboardButton("⬅️ رجوع للمسلسل", callback_data=f"content_{content_id}"),
+        InlineKeyboardButton("⬅️ رجوع للمحتوى", callback_data=f"content_{content_id}"),
         InlineKeyboardButton("🏠 الرئيسية", callback_data="home")
     ])
     
@@ -678,7 +698,7 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
             link_text = f"🔗 [رابط الجزء في القناة]({episode_link})"
     else:
         episode_link = None
-        link_text = "⚠️ تعذر إنشاء رابط للحلقة."
+        link_text = "⚠️ تعذر إنشاء رابط للحلقة/الجزء."
     
     if series_type == 'series':
         message_text = (
@@ -687,21 +707,20 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
             f"{link_text}\n\n"
             f"*ملاحظة:* تأكد من أنك منضم للقناة لمشاهدة الحلقة."
         )
+        button_text = "▶️ مشاهدة الحلقة"
     else:
         message_text = (
             f"🎬 *{series_name}*\n"
-            f"📁 الجزء {season}\n\n"
+            f"📁 الجزء {season} - جزء {episode_num}\n\n"
             f"{link_text}\n\n"
             f"*ملاحظة:* تأكد من أنك منضم للقناة لمشاهدة الجزء."
         )
+        button_text = "▶️ مشاهدة الجزء"
     
     # بناء لوحة المفاتيح
     keyboard = []
     if episode_link:
-        if series_type == 'series':
-            keyboard.append([InlineKeyboardButton("▶️ مشاهدة الحلقة", url=episode_link)])
-        else:
-            keyboard.append([InlineKeyboardButton("▶️ مشاهدة الجزء", url=episode_link)])
+        keyboard.append([InlineKeyboardButton(button_text, url=episode_link)])
     
     keyboard.append([
         InlineKeyboardButton("⬅️ رجوع للمحتوى", callback_data=f"content_{series_id}"),
