@@ -5,7 +5,8 @@ import sys
 from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import Message
+from telethon.tl.types import Message, Channel
+from telethon.tl.functions.channels import GetFullChannelRequest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -18,6 +19,7 @@ CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "https://t.me/ShoofFilm")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 STRING_SESSION = os.environ.get("STRING_SESSION", "")
 IMPORT_HISTORY = os.environ.get("IMPORT_HISTORY", "false").lower() == "true"  # تفعيل/تعطيل الاستيراد
+CHECK_DELETED_MESSAGES = os.environ.get("CHECK_DELETED_MESSAGES", "true").lower() == "true"  # تفعيل/تعطيل التحقق من المحذوفات
 
 # تحقق من وجود المتغيرات الأساسية
 if not all([API_ID, API_HASH, DATABASE_URL, STRING_SESSION]):
@@ -66,12 +68,13 @@ try:
         """))
         # إنشاء فهرس لتسريع البحث
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_series_name_type ON series(name, type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_episodes_telegram_msg_id ON episodes(telegram_message_id)"))
     print("✅ تم التحقق من هياكل الجداول.")
 except Exception as e:
     print(f"⚠️ ملاحظة حول الجداول: {e}")
 
 # ==============================
-# 4. دوال المساعدة (التحليل والحفظ)
+# 4. دوال المساعدة (التحليل والحفظ والحذف)
 # ==============================
 def clean_name(name):
     """تنظيف الاسم من كلمات 'مسلسل' و'فيلم' والأرقام في النهاية."""
@@ -303,6 +306,99 @@ def save_to_database(name, content_type, season_num, episode_num, telegram_msg_i
         print(f"❌ خطأ في قاعدة البيانات: {e}")
         return False
 
+def delete_from_database(message_id):
+    """حذف حلقة/جزء من قاعدة البيانات عند حذفها من القناة."""
+    try:
+        with engine.begin() as conn:
+            # البحث عن الحلقة المراد حذفها
+            episode_result = conn.execute(
+                text("""
+                    SELECT e.id, e.series_id, s.name, s.type, e.season, e.episode_number
+                    FROM episodes e
+                    JOIN series s ON e.series_id = s.id
+                    WHERE e.telegram_message_id = :msg_id
+                """),
+                {"msg_id": message_id}
+            ).fetchone()
+            
+            if not episode_result:
+                print(f"⚠️ لم يتم العثور على الحلقة {message_id} في قاعدة البيانات")
+                return False
+            
+            episode_id, series_id, name, content_type, season, episode_num = episode_result
+            
+            # حذف الحلقة
+            conn.execute(
+                text("DELETE FROM episodes WHERE id = :episode_id"),
+                {"episode_id": episode_id}
+            )
+            
+            # التحقق مما إذا كان المسلسل/الفيلم لا يزال لديه حلقات أخرى
+            remaining_episodes = conn.execute(
+                text("SELECT COUNT(*) FROM episodes WHERE series_id = :series_id"),
+                {"series_id": series_id}
+            ).scalar()
+            
+            type_arabic = "مسلسل" if content_type == 'series' else "فيلم"
+            
+            if remaining_episodes == 0:
+                # إذا لم يعد هناك حلقات، حذف المسلسل/الفيلم أيضًا
+                conn.execute(
+                    text("DELETE FROM series WHERE id = :series_id"),
+                    {"series_id": series_id}
+                )
+                print(f"🗑️ تم حذف {type_arabic}: {name} بالكامل (لا توجد حلقات/أجزاء متبقية)")
+            else:
+                if content_type == 'movie':
+                    print(f"🗑️ تم حذف {type_arabic}: {name} - الجزء {season}")
+                else:
+                    print(f"🗑️ تم حذف {type_arabic}: {name} - الموسم {season} الحلقة {episode_num}")
+            
+            return True
+            
+    except SQLAlchemyError as e:
+        print(f"❌ خطأ في حذف من قاعدة البيانات: {e}")
+        return False
+
+async def check_deleted_messages(client, channel, last_message_id):
+    """التحقق من الرسائل المحذوفة في القناة."""
+    print("\n🔍 التحقق من الرسائل المحذوفة...")
+    
+    try:
+        with engine.connect() as conn:
+            # جلب جميع معرفات الرسائل المخزنة في قاعدة البيانات
+            stored_messages = conn.execute(
+                text("SELECT telegram_message_id FROM episodes ORDER BY telegram_message_id")
+            ).fetchall()
+            
+            stored_ids = [msg[0] for msg in stored_messages]
+            
+            if not stored_ids:
+                print("   لا توجد رسائل مخزنة للتحقق")
+                return
+            
+            # جلب معرفات الرسائل الحالية في القناة
+            current_ids = []
+            async for message in client.iter_messages(channel, limit=1000):
+                current_ids.append(message.id)
+            
+            # تحديد الرسائل المحذوفة (الموجودة في قاعدة البيانات ولكن ليس في القناة)
+            deleted_ids = []
+            for stored_id in stored_ids:
+                if stored_id not in current_ids:
+                    deleted_ids.append(stored_id)
+            
+            if deleted_ids:
+                print(f"   تم العثور على {len(deleted_ids)} رسالة محذوفة")
+                for msg_id in deleted_ids:
+                    print(f"   🗑️ معالجة الرسالة المحذوفة: {msg_id}")
+                    delete_from_database(msg_id)
+            else:
+                print("   ✅ لا توجد رسائل محذوفة")
+                
+    except Exception as e:
+        print(f"❌ خطأ في التحقق من الرسائل المحذوفة: {e}")
+
 # ==============================
 # 5. استيراد المسلسلات القديمة
 # ==============================
@@ -373,11 +469,19 @@ async def monitor_channel():
         channel = await client.get_entity(CHANNEL_USERNAME)
         print(f"✅ تم العثور على القناة: {channel.title}")
         
+        # الحصول على آخر رسالة في القناة
+        last_message = await client.get_messages(channel, limit=1)
+        last_message_id = last_message[0].id if last_message else 0
+        
         # استيراد المحتوى القديم إذا كان مفعلاً
         if IMPORT_HISTORY:
             await import_channel_history(client, channel)
         else:
             print("⚠️ استيراد المحتوى القديم معطل. لتفعيله، أضف IMPORT_HISTORY=true في متغيرات البيئة.")
+        
+        # التحقق من الرسائل المحذوفة إذا كان مفعلاً
+        if CHECK_DELETED_MESSAGES:
+            await check_deleted_messages(client, channel, last_message_id)
         
         # مراقبة الرسائل الجديدة
         @client.on(events.NewMessage(chats=channel))
@@ -394,7 +498,15 @@ async def monitor_channel():
                         print(f"   تم التعرف على {type_arabic}: {name} - الموسم {season_num} الحلقة {episode_num}")
                     save_to_database(name, content_type, season_num, episode_num, message.id)
         
-        print("\n🎯 جاهز لاستقبال المحتوى الجديد من القناة...")
+        # مراقبة حذف الرسائل
+        @client.on(events.MessageDeleted(chats=channel))
+        async def handler(event):
+            deleted_ids = event.deleted_ids
+            for msg_id in deleted_ids:
+                print(f"🗑️ تم حذف رسالة من القناة: {msg_id}")
+                delete_from_database(msg_id)
+        
+        print("\n🎯 جاهز لاستقبال المحتوى الجديد ومراقبة الحذف من القناة...")
         print("   (اضغط Ctrl+C في Railway لإيقاف المراقبة)\n")
         
         await client.run_until_disconnected()
