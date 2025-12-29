@@ -251,7 +251,7 @@ async def show_content(update: Update, context: ContextTypes.DEFAULT_TYPE, conte
         title = "📺 *قائمة المسلسلات*"
         empty_msg = "📭 لا توجد مسلسلات حالياً."
         item_type = "مسلسل"
-        item_icon = "📺"
+        item_icon = ""
     elif content_type == 'movie':
         title = "🎬 *قائمة الأفلام*"
         empty_msg = "📭 لا توجد أفلام حالياً."
@@ -590,7 +590,7 @@ async def show_content_details(update: Update, context: ContextTypes.DEFAULT_TYP
             for ep_id, ep_num, msg_id, channel_id in season_episodes:
                 row_buttons.append(
                     InlineKeyboardButton(
-                        f"▶️ {ep_num}",
+                        f"حلقه {ep_num}",
                         callback_data=f"ep_{ep_id}"
                     )
                 )
@@ -747,7 +747,7 @@ async def show_season_episodes(update: Update, context: ContextTypes.DEFAULT_TYP
         ep_id, season, ep_num, msg_id, channel_id = ep
         row_buttons.append(
             InlineKeyboardButton(
-                f"▶️ {ep_num}",
+                f"حلقه {ep_num}",
                 callback_data=f"ep_{ep_id}"
             )
         )
