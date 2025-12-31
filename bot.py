@@ -1,7 +1,5 @@
 import os
 import logging
-import asyncio
-from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -33,34 +31,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# التخزين المؤقت البسيط
-class SimpleCache:
-    def __init__(self):
-        self.cache = {}
-        self.timestamps = {}
-    
-    def get(self, key, ttl=300):
-        """الحصول على قيمة من التخزين المؤقت"""
-        if key in self.cache:
-            if key in self.timestamps:
-                if datetime.now() - self.timestamps[key] < timedelta(seconds=ttl):
-                    return self.cache[key]
-            del self.cache[key]
-            del self.timestamps[key]
-        return None
-    
-    def set(self, key, value):
-        """تعيين قيمة في التخزين المؤقت"""
-        self.cache[key] = value
-        self.timestamps[key] = datetime.now()
-    
-    def clear(self):
-        """مسح التخزين المؤقت"""
-        self.cache.clear()
-        self.timestamps.clear()
-
-cache = SimpleCache()
-
 # محرك قاعدة البيانات
 engine = None
 if DATABASE_URL:
@@ -69,25 +39,27 @@ if DATABASE_URL:
         # اختبار الاتصال
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        logger.info("✅ تم الاتصال بقاعدة البيانات بنجاح.")
+        print("✅ تم الاتصال بقاعدة البيانات بنجاح.")
         
+        # اختبار جلب البيانات مباشرة
+        with engine.connect() as conn:
+            series_count = conn.execute(text("SELECT COUNT(*) FROM series WHERE type = 'series'")).scalar()
+            movies_count = conn.execute(text("SELECT COUNT(*) FROM series WHERE type = 'movie'")).scalar()
+            print(f"📊 في الاختبار المبدئي:")
+            print(f"   - عدد المسلسلات: {series_count}")
+            print(f"   - عدد الأفلام: {movies_count}")
+            
     except Exception as e:
-        logger.error(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
+        print(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
         engine = None
 
 # ==============================
-# 2. دوال المساعدة
+# 2. دوال المساعدة للتعامل مع قاعدة البيانات
 # ==============================
 async def get_all_content(content_type=None):
-    """جلب جميع المحتويات من قاعدة البيانات حسب النوع"""
-    cache_key = f"all_content_{content_type}"
-    cached = cache.get(cache_key)
-    if cached:
-        logger.debug(f"📦 استخدام البيانات المخزنة مؤقتاً: {content_type}")
-        return cached
-    
+    """جلب جميع المحتويات من قاعدة البيانات حسب النوع (مسلسلات/أفلام)"""
     if not engine:
-        logger.warning("محرك قاعدة البيانات غير متاح")
+        print("⚠️ محرك قاعدة البيانات غير متاح في get_all_content")
         return []
     
     try:
@@ -106,79 +78,48 @@ async def get_all_content(content_type=None):
                 ORDER BY s.id ASC
             """
             
+            print(f"🔍 تنفيذ الاستعلام: {query[:100]}...")
             result = conn.execute(text(query))
             rows = result.fetchall()
             
-            logger.info(f"📊 تم جلب {len(rows)} محتوى من النوع: {content_type}")
-            cache.set(cache_key, rows)
+            print(f"📊 تم جلب {len(rows)} صفاً من قاعدة البيانات:")
+            for row in rows:
+                print(f"   - {row[1]} ({row[2]}) - {row[3]} حلقة/جزء")
+            
             return rows
             
     except Exception as e:
-        logger.error(f"❌ خطأ في جلب المحتويات: {e}")
+        print(f"❌ خطأ في جلب المحتويات: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
-async def get_content_episodes(series_id, page=1, per_page=50):
+async def get_content_episodes(series_id):
     """جلب حلقات/أجزاء محتوى محدد"""
-    cache_key = f"content_episodes_{series_id}_{page}"
-    cached = cache.get(cache_key)
-    if cached:
-        return cached
-    
     if not engine:
-        logger.warning("محرك قاعدة البيانات غير متاح")
-        return [], 0, 0
+        print("⚠️ محرك قاعدة البيانات غير متاح في get_content_episodes")
+        return []
     
     try:
         with engine.connect() as conn:
-            # حساب العدد الإجمالي
-            count_result = conn.execute(text("""
-                SELECT COUNT(*) FROM episodes WHERE series_id = :series_id
-            """), {"series_id": series_id})
-            total_episodes = count_result.scalar()
-            
-            # حساب عدد الصفحات
-            total_pages = (total_episodes + per_page - 1) // per_page
-            
-            # ضبط رقم الصفحة
-            if page < 1:
-                page = 1
-            elif page > total_pages and total_pages > 0:
-                page = total_pages
-            
-            offset = (page - 1) * per_page
-            
-            # جلب الحلقات
             result = conn.execute(text("""
                 SELECT e.id, e.season, e.episode_number, 
                        e.telegram_message_id, e.telegram_channel_id
                 FROM episodes e
                 WHERE e.series_id = :series_id
                 ORDER BY e.season, e.episode_number
-                LIMIT :limit OFFSET :offset
-            """), {
-                "series_id": series_id,
-                "limit": per_page,
-                "offset": offset
-            })
-            
+            """), {"series_id": series_id})
             rows = result.fetchall()
-            result_data = (rows, total_episodes, total_pages)
-            cache.set(cache_key, result_data)
-            return result_data
-            
+            print(f"🔍 تم جلب {len(rows)} حلقة/جزء للمحتوى {series_id}")
+            return rows
     except Exception as e:
-        logger.error(f"❌ خطأ في جلب حلقات المحتوى {series_id}: {e}")
-        return [], 0, 0
+        print(f"❌ خطأ في جلب حلقات المحتوى {series_id}: {e}")
+        return []
 
 async def get_content_info(series_id):
     """جلب معلومات محتوى محدد"""
-    cache_key = f"content_info_{series_id}"
-    cached = cache.get(cache_key)
-    if cached:
-        return cached
-    
     if not engine:
-        logger.warning("محرك قاعدة البيانات غير متاح")
+        print("⚠️ محرك قاعدة البيانات غير متاح في get_content_info")
         return None
     
     try:
@@ -188,14 +129,43 @@ async def get_content_info(series_id):
             """), {"series_id": series_id})
             row = result.fetchone()
             if row:
-                cache.set(cache_key, row)
+                print(f"🔍 معلومات المحتوى {series_id}: {row[1]} ({row[2]})")
             return row
     except Exception as e:
-        logger.error(f"❌ خطأ في جلب معلومات المحتوى {series_id}: {e}")
+        print(f"❌ خطأ في جلب معلومات المحتوى {series_id}: {e}")
         return None
 
+async def get_direct_data():
+    """جلب البيانات مباشرة بدون JOIN للمقارنة"""
+    if not engine:
+        return [], []
+    
+    try:
+        with engine.connect() as conn:
+            # جلب المسلسلات
+            series_result = conn.execute(text("""
+                SELECT id, name FROM series WHERE type = 'series' ORDER BY id ASC
+            """))
+            series = series_result.fetchall()
+            
+            # جلب الأفلام
+            movies_result = conn.execute(text("""
+                SELECT id, name FROM series WHERE type = 'movie' ORDER BY id ASC
+            """))
+            movies = movies_result.fetchall()
+            
+            print(f"📊 البيانات المباشرة:")
+            print(f"   - عدد المسلسلات: {len(series)}")
+            print(f"   - عدد الأفلام: {len(movies)}")
+            
+            return series, movies
+            
+    except Exception as e:
+        print(f"❌ خطأ في جلب البيانات المباشرة: {e}")
+        return [], []
+
 # ==============================
-# 3. دوال البوت الأساسية (يجب أن تكون موجودة!)
+# 3. دوال البوت الرئيسية
 # ==============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /start"""
@@ -203,6 +173,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📺 المسلسلات", callback_data='series_list'),
          InlineKeyboardButton("🎬 الأفلام", callback_data='movies_list')],
         [InlineKeyboardButton("📁 جميع المحتويات", callback_data='all_content')],
+        [InlineKeyboardButton("🔍 بحث سريع", switch_inline_query_current_chat='')],
         [InlineKeyboardButton("🔄 اختبار قاعدة البيانات", callback_data='test_db')],
     ]
     
@@ -224,8 +195,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /all - عرض كل المحتويات
 /test - اختبار قاعدة البيانات
 /debug - فحص حالة النظام
-/status - عرض حالة البوت
-/clearcache - مسح التخزين المؤقت
     """
     
     if update.callback_query:
@@ -241,6 +210,161 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
 
+async def show_content(update: Update, context: ContextTypes.DEFAULT_TYPE, content_type=None):
+    """عرض المحتويات حسب النوع"""
+    if not engine:
+        error_msg = "❌ قاعدة البيانات غير متاحة حالياً."
+        if update.callback_query:
+            await update.callback_query.edit_message_text(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
+        return
+    
+    content_list = await get_all_content(content_type)
+    
+    if content_type == 'series':
+        title = "📺 *قائمة المسلسلات*"
+        empty_msg = "📭 لا توجد مسلسلات حالياً."
+        item_type = "مسلسل"
+        item_icon = "📺"
+    elif content_type == 'movie':
+        title = "🎬 *قائمة الأفلام*"
+        empty_msg = "📭 لا توجد أفلام حالياً."
+        item_type = "فيلم"
+        item_icon = "🎬"
+    else:
+        title = "📁 *جميع المحتويات*"
+        empty_msg = "📭 لا توجد محتويات حالياً."
+        item_type = "محتوى"
+        item_icon = "📁"
+    
+    if not content_list:
+        # محاولة جلب البيانات مباشرة للتحقق
+        series, movies = await get_direct_data()
+        
+        if content_type == 'series' and series:
+            # بناء قائمة المسلسلات مباشرة
+            text = f"{title}\n\n"
+            keyboard = []
+            for s in series:
+                text += f"📺 {s[1]}\n"
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"📺 {s[1][:15]}",
+                        callback_data=f"content_{s[0]}"
+                    )
+                ])
+            
+            keyboard.append([
+                InlineKeyboardButton("📺 المسلسلات", callback_data="series_list"),
+                InlineKeyboardButton("🎬 الأفلام", callback_data="movies_list")
+            ])
+            keyboard.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="home")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if update.callback_query:
+                await update.callback_query.edit_message_text(
+                    text,
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+            else:
+                await update.message.reply_text(
+                    text,
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+            return
+            
+        elif content_type == 'movie' and movies:
+            # بناء قائمة الأفلام مباشرة
+            text = f"{title}\n\n"
+            keyboard = []
+            for m in movies:
+                text += f"🎬 {m[1]}\n"
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"🎬 {m[1][:15]}",
+                        callback_data=f"content_{m[0]}"
+                    )
+                ])
+            
+            keyboard.append([
+                InlineKeyboardButton("📺 المسلسلات", callback_data="series_list"),
+                InlineKeyboardButton("🎬 الأفلام", callback_data="movies_list")
+            ])
+            keyboard.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="home")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if update.callback_query:
+                await update.callback_query.edit_message_text(
+                    text,
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+            else:
+                await update.message.reply_text(
+                    text,
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+            return
+        else:
+            # لا توجد بيانات حتى مباشرة
+            no_data_msg = f"{empty_msg}\n\nℹ️ *ملاحظة:* يمكنك استخدام زر 'اختبار قاعدة البيانات' للتحقق."
+            if update.callback_query:
+                await update.callback_query.edit_message_text(no_data_msg)
+            else:
+                await update.message.reply_text(no_data_msg)
+            return
+    
+    # بناء النص
+    text = f"{title}\n\n"
+    keyboard = []
+    
+    for content in content_list:
+        content_id, name, content_type, episode_count = content
+        
+        if content_type == 'series':
+            type_icon = "📺"
+            count_text = f"{episode_count} حلقة" if episode_count > 0 else "بدون حلقات"
+        else:
+            type_icon = "🎬"
+            count_text = f"{episode_count} جزء" if episode_count > 0 else "بدون أجزاء"
+        
+        text += f"{type_icon} {name} ({count_text})\n"
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{type_icon} {name[:15]}...",
+                callback_data=f"content_{content_id}"
+            )
+        ])
+    
+    # أزرار التنقل
+    keyboard.append([
+        InlineKeyboardButton("📺 المسلسلات", callback_data="series_list"),
+        InlineKeyboardButton("🎬 الأفلام", callback_data="movies_list")
+    ])
+    keyboard.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="home")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # الإرسال حسب مصدر الطلب
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
 async def series_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /series - عرض المسلسلات"""
     await show_content(update, context, 'series')
@@ -252,417 +376,6 @@ async def movies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /all - عرض كل المحتويات"""
     await show_content(update, context)
-
-async def show_content(update: Update, context: ContextTypes.DEFAULT_TYPE, content_type=None):
-    """عرض المحتويات حسب النوع"""
-    start_time = datetime.now()
-    
-    if not engine:
-        error_msg = "❌ قاعدة البيانات غير متاحة حالياً."
-        if update.callback_query:
-            await update.callback_query.edit_message_text(error_msg)
-        else:
-            await update.message.reply_text(error_msg)
-        return
-    
-    try:
-        content_list = await get_all_content(content_type)
-        
-        if content_type == 'series':
-            title = "📺 *قائمة المسلسلات*"
-            empty_msg = "📭 لا توجد مسلسلات حالياً."
-        elif content_type == 'movie':
-            title = "🎬 *قائمة الأفلام*"
-            empty_msg = "📭 لا توجد أفلام حالياً."
-        else:
-            title = "📁 *جميع المحتويات*"
-            empty_msg = "📭 لا توجد محتويات حالياً."
-        
-        if not content_list:
-            keyboard = [
-                [InlineKeyboardButton("🔄 تحديث", callback_data=f"{content_type}_list" if content_type else "all_content")],
-                [InlineKeyboardButton("🏠 الرئيسية", callback_data="home")]
-            ]
-            
-            if update.callback_query:
-                await update.callback_query.edit_message_text(
-                    empty_msg,
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            else:
-                await update.message.reply_text(
-                    empty_msg,
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            return
-        
-        # بناء النص
-        text = f"{title}\n\n"
-        keyboard = []
-        
-        for content in content_list:
-            content_id, name, content_type, episode_count = content
-            
-            if content_type == 'series':
-                count_text = f"{episode_count} حلقة" if episode_count > 0 else "بدون حلقات"
-            else:
-                count_text = f"{episode_count} جزء" if episode_count > 0 else "بدون أجزاء"
-            
-            text += f"{name} ({count_text})\n"
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"{name[:20]}",
-                    callback_data=f"content_{content_id}"
-                )
-            ])
-        
-        # أزرار التنقل
-        keyboard.append([
-            InlineKeyboardButton("📺 المسلسلات", callback_data="series_list"),
-            InlineKeyboardButton("🎬 الأفلام", callback_data="movies_list")
-        ])
-        keyboard.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="home")])
-        
-        # إضافة وقت الاستجابة
-        response_time = (datetime.now() - start_time).total_seconds()
-        text += f"\n⏱️ وقت الاستجابة: {response_time:.2f} ثانية"
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        if update.callback_query:
-            await update.callback_query.edit_message_text(
-                text,
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-        else:
-            await update.message.reply_text(
-                text,
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-            
-    except Exception as e:
-        logger.error(f"خطأ في عرض المحتويات: {e}")
-        error_msg = f"❌ حدث خطأ: {str(e)[:100]}"
-        if update.callback_query:
-            await update.callback_query.edit_message_text(error_msg)
-        else:
-            await update.message.reply_text(error_msg)
-
-async def show_content_details(update: Update, context: ContextTypes.DEFAULT_TYPE, content_id, page=1):
-    """عرض تفاصيل محتوى محدد"""
-    query = update.callback_query
-    
-    content_info = await get_content_info(content_id)
-    if not content_info:
-        await query.edit_message_text("❌ المحتوى غير موجود.")
-        return
-    
-    content_id, name, content_type = content_info
-    episodes, total_episodes, total_pages = await get_content_episodes(content_id, page)
-    
-    if not episodes:
-        item_type = "حلقات" if content_type == 'series' else "أجزاء"
-        message_text = f"*{name}*\n\n📭 لا توجد {item_type} حالياً."
-        keyboard = [[InlineKeyboardButton("⬅️ رجوع", callback_data=f"{content_type}_list")]]
-        await query.edit_message_text(
-            message_text, 
-            parse_mode='Markdown', 
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-    
-    # تجميع الحلقات حسب الموسم
-    seasons = {}
-    for ep in episodes:
-        ep_id, season, ep_num, msg_id, channel_id = ep
-        if season not in seasons:
-            seasons[season] = []
-        seasons[season].append((ep_id, ep_num, msg_id, channel_id))
-    
-    # بناء الرسالة
-    item_type = "حلقات" if content_type == 'series' else "أجزاء"
-    message_text = f"*{name}*\n\n"
-    
-    if total_episodes > 0:
-        message_text += f"عدد {item_type}: {total_episodes}\n"
-        if total_pages > 1:
-            message_text += f"الصفحة {page} من {total_pages}\n\n"
-    
-    keyboard = []
-    
-    if content_type == 'series':
-        if len(seasons) > 1:
-            message_text += "اختر الموسم:"
-            for season_num in sorted(seasons.keys()):
-                ep_count = len(seasons[season_num])
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"الموسم {season_num} ({ep_count} حلقة)",
-                        callback_data=f"season_{content_id}_{season_num}"
-                    )
-                ])
-        else:
-            season_num = list(seasons.keys())[0] if seasons else 1
-            season_episodes = seasons.get(season_num, [])
-            
-            message_text += f"الموسم {season_num}\nاختر الحلقة:"
-            
-            row_buttons = []
-            for ep_id, ep_num, msg_id, channel_id in season_episodes:
-                row_buttons.append(
-                    InlineKeyboardButton(
-                        f"الحلقة {ep_num}",
-                        callback_data=f"ep_{ep_id}"
-                    )
-                )
-                
-                if len(row_buttons) == 5:
-                    keyboard.append(row_buttons)
-                    row_buttons = []
-            
-            if row_buttons:
-                keyboard.append(row_buttons)
-    else:
-        if len(seasons) > 1:
-            message_text += "اختر الجزء:"
-            for season_num in sorted(seasons.keys()):
-                ep_id, ep_num, msg_id, channel_id = seasons[season_num][0]
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"الجزء {season_num}",
-                        callback_data=f"ep_{ep_id}"
-                    )
-                ])
-        else:
-            season_num = list(seasons.keys())[0] if seasons else 1
-            season_episodes = seasons.get(season_num, [])
-            
-            if season_episodes:
-                ep_id, ep_num, msg_id, channel_id = season_episodes[0]
-                message_text += "اضغط على الزر أدناه لمشاهدة الفيلم:"
-                keyboard = [[
-                    InlineKeyboardButton(
-                        "مشاهدة الفيلم",
-                        callback_data=f"ep_{ep_id}"
-                    )
-                ]]
-    
-    # أزرار التنقل بين الصفحات
-    if total_pages > 1:
-        nav_buttons = []
-        
-        if page > 1:
-            nav_buttons.append(
-                InlineKeyboardButton("⬅️ السابقة", callback_data=f"content_page_{content_id}_{page-1}")
-            )
-        
-        nav_buttons.append(
-            InlineKeyboardButton(f"📄 {page}/{total_pages}", callback_data="page_info")
-        )
-        
-        if page < total_pages:
-            nav_buttons.append(
-                InlineKeyboardButton("التالية ➡️", callback_data=f"content_page_{content_id}_{page+1}")
-            )
-        
-        keyboard.append(nav_buttons)
-    
-    keyboard.append([
-        InlineKeyboardButton("⬅️ رجوع", callback_data=f"{content_type}_list"),
-        InlineKeyboardButton("🏠 الرئيسية", callback_data="home")
-    ])
-    
-    await query.edit_message_text(
-        message_text,
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def show_season_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE, content_id, season_num, page=1):
-    """عرض حلقات موسم محدد"""
-    query = update.callback_query
-    
-    content_info = await get_content_info(content_id)
-    if not content_info:
-        await query.edit_message_text("❌ المحتوى غير موجود.")
-        return
-    
-    content_id, name, content_type = content_info
-    
-    if content_type != 'series':
-        await query.edit_message_text("❌ هذه الدالة للمسلسلات فقط.")
-        return
-    
-    try:
-        with engine.connect() as conn:
-            # حساب العدد الإجمالي للحلقات للموسم
-            count_result = conn.execute(text("""
-                SELECT COUNT(*) FROM episodes 
-                WHERE series_id = :series_id AND season = :season
-            """), {"series_id": content_id, "season": season_num})
-            total_episodes = count_result.scalar()
-            
-            # حساب عدد الصفحات
-            per_page = 50
-            total_pages = (total_episodes + per_page - 1) // per_page
-            
-            # ضبط رقم الصفحة
-            if page < 1:
-                page = 1
-            elif page > total_pages and total_pages > 0:
-                page = total_pages
-            
-            offset = (page - 1) * per_page
-            
-            # جلب الحلقات
-            result = conn.execute(text("""
-                SELECT e.id, e.season, e.episode_number, 
-                       e.telegram_message_id, e.telegram_channel_id
-                FROM episodes e
-                WHERE e.series_id = :series_id AND e.season = :season
-                ORDER BY e.episode_number
-                LIMIT :limit OFFSET :offset
-            """), {
-                "series_id": content_id,
-                "season": season_num,
-                "limit": per_page,
-                "offset": offset
-            })
-            
-            episodes = result.fetchall()
-            
-    except Exception as e:
-        await query.edit_message_text(f"❌ خطأ في جلب حلقات الموسم: {e}")
-        return
-    
-    if not episodes:
-        await query.edit_message_text(f"❌ لا توجد حلقات للموسم {season_num}.")
-        return
-    
-    message_text = f"*{name}*\nالموسم {season_num}\n\n"
-    
-    if total_episodes > 0:
-        message_text += f"عدد الحلقات: {total_episodes}\n"
-        if total_pages > 1:
-            message_text += f"الصفحة {page} من {total_pages}\n\n"
-    
-    message_text += "اختر الحلقة:"
-    
-    keyboard = []
-    row_buttons = []
-    
-    for ep in episodes:
-        ep_id, season, ep_num, msg_id, channel_id = ep
-        row_buttons.append(
-            InlineKeyboardButton(
-                f"الحلقة {ep_num}",
-                callback_data=f"ep_{ep_id}"
-            )
-        )
-        
-        if len(row_buttons) == 5:
-            keyboard.append(row_buttons)
-            row_buttons = []
-    
-    if row_buttons:
-        keyboard.append(row_buttons)
-    
-    if total_pages > 1:
-        nav_buttons = []
-        
-        if page > 1:
-            nav_buttons.append(
-                InlineKeyboardButton("⬅️ السابقة", callback_data=f"season_page_{content_id}_{season_num}_{page-1}")
-            )
-        
-        nav_buttons.append(
-            InlineKeyboardButton(f"📄 {page}/{total_pages}", callback_data="page_info")
-        )
-        
-        if page < total_pages:
-            nav_buttons.append(
-                InlineKeyboardButton("التالية ➡️", callback_data=f"season_page_{content_id}_{season_num}_{page+1}")
-            )
-        
-        keyboard.append(nav_buttons)
-    
-    keyboard.append([
-        InlineKeyboardButton("⬅️ رجوع للمسلسل", callback_data=f"content_{content_id}"),
-        InlineKeyboardButton("🏠 الرئيسية", callback_data="home")
-    ])
-    
-    await query.edit_message_text(
-        message_text,
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYPE, episode_id):
-    """عرض تفاصيل حلقة/جزء"""
-    query = update.callback_query
-    
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT e.season, e.episode_number, e.telegram_message_id,
-                       s.name as series_name, s.type as series_type, s.id as series_id
-                FROM episodes e
-                JOIN series s ON e.series_id = s.id
-                WHERE e.id = :episode_id
-            """), {"episode_id": episode_id}).fetchone()
-    except Exception as e:
-        await query.edit_message_text(f"❌ خطأ في جلب معلومات الحلقة: {e}")
-        return
-    
-    if not result:
-        await query.edit_message_text("❌ الحلقة/الجزء غير موجود.")
-        return
-    
-    season, episode_num, msg_id, series_name, series_type, series_id = result
-    
-    if msg_id:
-        episode_link = f"https://t.me/ShoofFilm/{msg_id}"
-        if series_type == 'series':
-            link_text = f"🔗 [رابط الحلقة في القناة]({episode_link})"
-            title_text = f"*{series_name}*\nالموسم {season} - الحلقة {episode_num}"
-            button_text = "مشاهدة الحلقة"
-        else:
-            link_text = f"🔗 [رابط الجزء في القناة]({episode_link})"
-            title_text = f"*{series_name}*\nالجزء {season}"
-            button_text = "مشاهدة الجزء"
-    else:
-        episode_link = None
-        link_text = "⚠️ تعذر إنشاء رابط للحلقة/الجزء."
-        if series_type == 'series':
-            title_text = f"*{series_name}*\nالموسم {season} - الحلقة {episode_num}"
-            button_text = "مشاهدة الحلقة"
-        else:
-            title_text = f"*{series_name}*\nالجزء {season}"
-            button_text = "مشاهدة الجزء"
-    
-    message_text = (
-        f"{title_text}\n\n"
-        f"{link_text}\n\n"
-        f"*ملاحظة:* تأكد من أنك منضم للقناة لمشاهدة المحتوى."
-    )
-    
-    keyboard = []
-    if episode_link:
-        keyboard.append([InlineKeyboardButton(button_text, url=episode_link)])
-    
-    keyboard.append([
-        InlineKeyboardButton("⬅️ رجوع للمحتوى", callback_data=f"content_{series_id}"),
-        InlineKeyboardButton("🏠 الرئيسية", callback_data="home")
-    ])
-    
-    await query.edit_message_text(
-        message_text,
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        disable_web_page_preview=False
-    )
 
 async def test_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /test - اختبار قاعدة البيانات"""
@@ -703,64 +416,11 @@ async def test_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 episodes_text += f"• ID:{row[0]} - مسلسل:{row[1]} - م{row[2]} ح{row[3]}\n"
             
             reply_text = f"{tables_info}\n{series_text}\n{episodes_text}"
-        
+            
         await update.message.reply_text(reply_text, parse_mode='Markdown')
         
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ في اختبار قاعدة البيانات:\n`{str(e)[:300]}`")
-
-async def test_db_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """اختبار قاعدة البيانات من الزر"""
-    query = update.callback_query
-    
-    try:
-        if not engine:
-            await query.edit_message_text("❌ قاعدة البيانات غير متصلة.")
-            return
-        
-        with engine.connect() as conn:
-            # جلب إحصائيات بسيطة
-            series_count = conn.execute(text("SELECT COUNT(*) FROM series WHERE type = 'series'")).scalar()
-            movies_count = conn.execute(text("SELECT COUNT(*) FROM series WHERE type = 'movie'")).scalar()
-            
-            # جلب بعض الأمثلة
-            series_examples = conn.execute(text("""
-                SELECT name FROM series WHERE type = 'series' ORDER BY id LIMIT 3
-            """)).fetchall()
-            
-            movies_examples = conn.execute(text("""
-                SELECT name FROM series WHERE type = 'movie' ORDER BY id LIMIT 3
-            """)).fetchall()
-        
-        series_names = [row[0] for row in series_examples] if series_examples else ["لا يوجد"]
-        movies_names = [row[0] for row in movies_examples] if movies_examples else ["لا يوجد"]
-        
-        reply_text = (
-            f"✅ *اختبار قاعدة البيانات:*\n\n"
-            f"📊 *الإحصائيات:*\n"
-            f"• عدد المسلسلات: {series_count}\n"
-            f"• عدد الأفلام: {movies_count}\n\n"
-            f"📺 *أمثلة على المسلسلات:*\n"
-            f"{chr(10).join(['• ' + name for name in series_names])}\n\n"
-            f"🎬 *أمثلة على الأفلام:*\n"
-            f"{chr(10).join(['• ' + name for name in movies_names])}\n\n"
-            f"ℹ️ *ملاحظة:* إذا كانت الأرقام غير صفرية ولكن لا تظهر في القوائم، قد يكون هناك مشكلة في استعلام JOIN."
-        )
-        
-        keyboard = [
-            [InlineKeyboardButton("📺 عرض المسلسلات", callback_data="series_list"),
-             InlineKeyboardButton("🎬 عرض الأفلام", callback_data="movies_list")],
-            [InlineKeyboardButton("🏠 الرئيسية", callback_data="home")]
-        ]
-        
-        await query.edit_message_text(
-            reply_text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        
-    except Exception as e:
-        await query.edit_message_text(f"❌ خطأ في اختبار قاعدة البيانات:\n`{str(e)[:200]}`")
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /debug - فحص حالة النظام"""
@@ -819,8 +479,7 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• عدد المسلسلات: `{series_count}`\n"
             f"• عدد الأفلام: `{movies_count}`\n"
             f"• إجمالي المحتويات: `{series_count + movies_count}`\n"
-            f"• عدد الحلقات/الأجزاء: `{episodes_count}`\n"
-            f"• حجم التخزين المؤقت: `{len(cache.cache)}` عنصر\n\n"
+            f"• عدد الحلقات/الأجزاء: `{episodes_count}`\n\n"
             f"{series_details}\n"
             f"{recent_details}"
         )
@@ -830,82 +489,368 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ في الفحص:\n`{str(e)[:300]}`")
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض حالة النظام"""
-    cache_size = len(cache.cache)
-    db_status = "✅ متصلة" if engine else "❌ غير متصلة"
-    
-    status_text = (
-        f"📊 *حالة البوت:*\n\n"
-        f"• قاعدة البيانات: {db_status}\n"
-        f"• حجم التخزين المؤقت: {cache_size} عنصر\n"
-        f"• وقت التشغيل: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        f"💡 *تلميح:* استخدم /clearcache لمسح التخزين المؤقت"
-    )
-    
-    await update.message.reply_text(status_text, parse_mode='Markdown')
-
-async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مسح التخزين المؤقت"""
-    cache.clear()
-    await update.message.reply_text("✅ تم مسح التخزين المؤقت.")
-
 # ==============================
 # 4. معالج الأزرار التفاعلية
 # ==============================
+async def show_content_details(update: Update, context: ContextTypes.DEFAULT_TYPE, content_id):
+    """عرض تفاصيل محتوى محدد (مسلسل أو فيلم)"""
+    query = update.callback_query
+    
+    # جلب معلومات المحتوى
+    content_info = await get_content_info(content_id)
+    if not content_info:
+        await query.edit_message_text("❌ المحتوى غير موجود.")
+        return
+    
+    content_id, name, content_type = content_info
+    episodes = await get_content_episodes(content_id)
+    
+    type_icon = "📺" if content_type == 'series' else "🎬"
+    
+    if not episodes:
+        message_text = f"{type_icon} *{name}*\n\n📭 لا توجد { 'حلقات' if content_type == 'series' else 'أجزاء' } حالياً."
+        keyboard = [[InlineKeyboardButton("⬅️ رجوع", callback_data=f"{content_type}_list")]]
+        await query.edit_message_text(
+            message_text, 
+            parse_mode='Markdown', 
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+    
+    # تجميع الحلقات حسب الموسم (للمسلسلات) أو الجزء (للأفلام)
+    seasons = {}
+    for ep in episodes:
+        ep_id, season, ep_num, msg_id, channel_id = ep
+        if season not in seasons:
+            seasons[season] = []
+        seasons[season].append((ep_id, ep_num, msg_id, channel_id))
+    
+    # ============================================
+    # معالجة المسلسلات
+    # ============================================
+    if content_type == 'series':
+        # إذا كان المسلسل له أكثر من موسم، نعرض قائمة المواسم
+        if len(seasons) > 1:
+            message_text = f"{type_icon} *{name}*\n\nاختر الموسم:"
+            keyboard = []
+            for season_num in sorted(seasons.keys()):
+                # حساب عدد الحلقات في هذا الموسم
+                ep_count = len(seasons[season_num])
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"📁 الموسم {season_num} ({ep_count} حلقة)",
+                        callback_data=f"season_{content_id}_{season_num}"
+                    )
+                ])
+        else:
+            # إذا كان المسلسل له موسم واحد فقط، نعرض الحلقات مباشرة
+            season_num = list(seasons.keys())[0] if seasons else 1
+            season_episodes = seasons.get(season_num, [])
+            
+            message_text = f"{type_icon} *{name}*\n\nاختر الحلقة:"
+            keyboard = []
+            
+            # تقسيم أزرار الحلقات (5 أزرار في كل صف)
+            row_buttons = []
+            for ep_id, ep_num, msg_id, channel_id in season_episodes:
+                row_buttons.append(
+                    InlineKeyboardButton(
+                        f"▶️ الحلقة {ep_num}",
+                        callback_data=f"ep_{ep_id}"
+                    )
+                )
+                
+                # كل 5 أزرار نبدأ صف جديد
+                if len(row_buttons) == 5:
+                    keyboard.append(row_buttons)
+                    row_buttons = []
+            
+            if row_buttons:
+                keyboard.append(row_buttons)
+    
+    # ============================================
+    # معالجة الأفلام
+    # ============================================
+    else:  # content_type == 'movie'
+        # إذا كان الفيلم له أكثر من جزء (مثل الفيلم الأزرق 1، الفيلم الأزرق 2)
+        if len(seasons) > 1:
+            message_text = f"{type_icon} *{name}*\n\nاختر الجزء:"
+            keyboard = []
+            for season_num in sorted(seasons.keys()):
+                # لكل جزء (موسم) نأخذ الحلقة الأولى (والوحيدة)
+                # لأن الأفلام لا تحتوي على حلقات داخل الجزء
+                ep_id, ep_num, msg_id, channel_id = seasons[season_num][0]
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"🎬 الجزء {season_num}",
+                        callback_data=f"ep_{ep_id}"
+                    )
+                ])
+        else:
+            # إذا كان الفيلم له جزء واحد فقط، نعرض الزر مباشرة
+            season_num = list(seasons.keys())[0] if seasons else 1
+            season_episodes = seasons.get(season_num, [])
+            
+            # نأخذ الحلقة الأولى (والوحيدة) للجزء الواحد
+            if season_episodes:
+                ep_id, ep_num, msg_id, channel_id = season_episodes[0]
+                message_text = f"{type_icon} *{name}*\n\n🎬 اضغط على الزر أدناه لمشاهدة الفيلم:"
+                keyboard = [[
+                    InlineKeyboardButton(
+                        "🎬 مشاهدة الفيلم",
+                        callback_data=f"ep_{ep_id}"
+                    )
+                ]]
+            else:
+                message_text = f"{type_icon} *{name}*\n\n📭 لا توجد أجزاء حالياً."
+                keyboard = []
+    
+    # أزرار التنقل
+    keyboard.append([
+        InlineKeyboardButton("⬅️ رجوع", callback_data=f"{content_type}_list"),
+        InlineKeyboardButton("🏠 الرئيسية", callback_data="home")
+    ])
+    
+    await query.edit_message_text(
+        message_text,
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def show_season_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE, content_id, season_num):
+    """عرض حلقات موسم محدد لمسلسل (للمسلسلات فقط)"""
+    query = update.callback_query
+    
+    # جلب معلومات المحتوى
+    content_info = await get_content_info(content_id)
+    if not content_info:
+        await query.edit_message_text("❌ المحتوى غير موجود.")
+        return
+    
+    content_id, name, content_type = content_info
+    
+    # هذه الدالة للمسلسلات فقط
+    if content_type != 'series':
+        await query.edit_message_text("❌ هذه الدالة للمسلسلات فقط.")
+        return
+    
+    episodes = await get_content_episodes(content_id)
+    
+    if not episodes:
+        await query.edit_message_text("❌ لا توجد حلقات لهذا الموسم.")
+        return
+    
+    # تصفية الحلقات للموسم المحدد
+    season_episodes = [ep for ep in episodes if ep[1] == season_num]
+    
+    if not season_episodes:
+        await query.edit_message_text(f"❌ لا توجد حلقات للموسم {season_num}.")
+        return
+    
+    message_text = f"📺 *{name}*\n📁 الموسم {season_num}\n\nاختر الحلقة:"
+    
+    keyboard = []
+    # تقسيم أزرار الحلقات (5 أزرار في كل صف)
+    row_buttons = []
+    for ep in season_episodes:
+        ep_id, season, ep_num, msg_id, channel_id = ep
+        row_buttons.append(
+            InlineKeyboardButton(
+                f"▶️ الحلقة {ep_num}",
+                callback_data=f"ep_{ep_id}"
+            )
+        )
+        if len(row_buttons) == 5:
+            keyboard.append(row_buttons)
+            row_buttons = []
+    
+    if row_buttons:
+        keyboard.append(row_buttons)
+    
+    # أزرار التنقل
+    keyboard.append([
+        InlineKeyboardButton("⬅️ رجوع للمسلسل", callback_data=f"content_{content_id}"),
+        InlineKeyboardButton("🏠 الرئيسية", callback_data="home")
+    ])
+    
+    await query.edit_message_text(
+        message_text,
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYPE, episode_id):
+    """عرض تفاصيل حلقة/جزء مع روابط"""
+    query = update.callback_query
+    
+    try:
+        with engine.connect() as conn:
+            from sqlalchemy import text as sql_text
+            result = conn.execute(sql_text("""
+                SELECT e.season, e.episode_number, e.telegram_message_id,
+                       s.name as series_name, s.type as series_type, s.id as series_id
+                FROM episodes e
+                JOIN series s ON e.series_id = s.id
+                WHERE e.id = :episode_id
+            """), {"episode_id": episode_id}).fetchone()
+    except Exception as e:
+        await query.edit_message_text(f"❌ خطأ في جلب معلومات الحلقة: {e}")
+        return
+    
+    if not result:
+        await query.edit_message_text("❌ الحلقة/الجزء غير موجود.")
+        return
+    
+    season, episode_num, msg_id, series_name, series_type, series_id = result
+    
+    # بناء الرابط
+    if msg_id:
+        episode_link = f"https://t.me/ShoofFilm/{msg_id}"
+        if series_type == 'series':
+            link_text = f"🔗 [رابط الحلقة في القناة]({episode_link})"
+            title_text = f"🎬 *{series_name}*\n📁 الموسم {season} - الحلقة {episode_num}"
+            button_text = "▶️ مشاهدة الحلقة"
+        else:
+            link_text = f"🔗 [رابط الجزء في القناة]({episode_link})"
+            title_text = f"🎬 *{series_name}*\n📁 الجزء {season}"
+            button_text = "🎬 مشاهدة الجزء"
+    else:
+        episode_link = None
+        link_text = "⚠️ تعذر إنشاء رابط للحلقة/الجزء."
+        if series_type == 'series':
+            title_text = f"🎬 *{series_name}*\n📁 الموسم {season} - الحلقة {episode_num}"
+            button_text = "▶️ مشاهدة الحلقة"
+        else:
+            title_text = f"🎬 *{series_name}*\n📁 الجزء {season}"
+            button_text = "🎬 مشاهدة الجزء"
+    
+    message_text = (
+        f"{title_text}\n\n"
+        f"{link_text}\n\n"
+        f"*ملاحظة:* تأكد من أنك منضم للقناة لمشاهدة المحتوى."
+    )
+    
+    # بناء لوحة المفاتيح
+    keyboard = []
+    if episode_link:
+        keyboard.append([InlineKeyboardButton(button_text, url=episode_link)])
+    
+    keyboard.append([
+        InlineKeyboardButton("⬅️ رجوع للمحتوى", callback_data=f"content_{series_id}"),
+        InlineKeyboardButton("🏠 الرئيسية", callback_data="home")
+    ])
+    
+    await query.edit_message_text(
+        message_text,
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        disable_web_page_preview=False
+    )
+
+async def test_db_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """اختبار قاعدة البيانات من الزر"""
+    query = update.callback_query
+    
+    try:
+        if not engine:
+            await query.edit_message_text("❌ قاعدة البيانات غير متصلة.")
+            return
+        
+        with engine.connect() as conn:
+            # جلب إحصائيات بسيطة
+            series_count = conn.execute(text("SELECT COUNT(*) FROM series WHERE type = 'series'")).scalar()
+            movies_count = conn.execute(text("SELECT COUNT(*) FROM series WHERE type = 'movie'")).scalar()
+            
+            # جلب بعض الأمثلة
+            series_examples = conn.execute(text("""
+                SELECT name FROM series WHERE type = 'series' ORDER BY id LIMIT 3
+            """)).fetchall()
+            
+            movies_examples = conn.execute(text("""
+                SELECT name FROM series WHERE type = 'movie' ORDER BY id LIMIT 3
+            """)).fetchall()
+        
+        series_names = [row[0] for row in series_examples] if series_examples else ["لا يوجد"]
+        movies_names = [row[0] for row in movies_examples] if movies_examples else ["لا يوجد"]
+        
+        reply_text = (
+            f"✅ *اختبار قاعدة البيانات:*\n\n"
+            f"📊 *الإحصائيات:*\n"
+            f"• عدد المسلسلات: {series_count}\n"
+            f"• عدد الأفلام: {movies_count}\n\n"
+            f"📺 *أمثلة على المسلسلات:*\n"
+            f"{chr(10).join(['• ' + name for name in series_names])}\n\n"
+            f"🎬 *أمثلة على الأفلام:*\n"
+            f"{chr(10).join(['• ' + name for name in movies_names])}\n\n"
+            f"ℹ️ *ملاحظة:* إذا كانت الأرقام غير صفرية ولكن لا تظهر في القوائم، قد يكون هناك مشكلة في استعلام JOIN."
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("📺 عرض المسلسلات", callback_data="series_list"),
+             InlineKeyboardButton("🎬 عرض الأفلام", callback_data="movies_list")],
+            [InlineKeyboardButton("🏠 الرئيسية", callback_data="home")]
+        ]
+        
+        await query.edit_message_text(
+            reply_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+    except Exception as e:
+        await query.edit_message_text(f"❌ خطأ في اختبار قاعدة البيانات:\n`{str(e)[:200]}`")
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة أزرار InlineKeyboard"""
     query = update.callback_query
-    await query.answer()
+    await query.answer()  # مهم لإعلام تليجرام
     
     data = query.data
     
-    try:
-        if data == 'home':
-            await start(update, context)
-        elif data == 'test_db':
-            await test_db_button(update, context)
-        elif data == 'all_content':
-            await show_content(update, context)
-        elif data == 'series_list':
-            await show_content(update, context, 'series')
-        elif data == 'movies_list':
-            await show_content(update, context, 'movie')
-        elif data == 'page_info':
-            await query.answer("معلومات الصفحة", show_alert=False)
-        elif data.startswith('content_page_'):
-            parts = data.split('_')
-            content_id = int(parts[2])
-            page = int(parts[3])
-            await show_content_details(update, context, content_id, page)
-        elif data.startswith('season_page_'):
-            parts = data.split('_')
-            content_id = int(parts[2])
-            season_num = int(parts[3])
-            page = int(parts[4])
-            await show_season_episodes(update, context, content_id, season_num, page)
-        elif data.startswith('content_'):
-            content_id = int(data.split('_')[1])
-            await show_content_details(update, context, content_id, 1)
-        elif data.startswith('ep_'):
-            episode_id = int(data.split('_')[1])
-            await show_episode_details(update, context, episode_id)
-        elif data.startswith('season_'):
-            parts = data.split('_')
-            content_id = int(parts[1])
-            season_num = int(parts[2])
-            await show_season_episodes(update, context, content_id, season_num, 1)
-        else:
-            await query.answer("زر غير معروف!")
-    except Exception as e:
-        logger.error(f"خطأ في معالجة الزر {data}: {e}")
-        await query.answer(f"حدث خطأ: {str(e)[:50]}", show_alert=True)
+    if data == 'home':
+        await start(update, context)
+        return
+    
+    elif data == 'test_db':
+        await test_db_button(update, context)
+        return
+    
+    elif data == 'all_content':
+        await show_content(update, context)
+        return
+    
+    elif data == 'series_list':
+        await show_content(update, context, 'series')
+        return
+    
+    elif data == 'movies_list':
+        await show_content(update, context, 'movie')
+        return
+    
+    elif data.startswith('content_'):
+        content_id = int(data.split('_')[1])
+        await show_content_details(update, context, content_id)
+        return
+    
+    elif data.startswith('ep_'):
+        episode_id = int(data.split('_')[1])
+        await show_episode_details(update, context, episode_id)
+        return
+    
+    elif data.startswith('season_'):
+        # بيانات الزر: season_<content_id>_<season_number>
+        parts = data.split('_')
+        content_id = int(parts[1])
+        season_num = int(parts[2])
+        await show_season_episodes(update, context, content_id, season_num)
+        return
 
 # ==============================
 # 5. الدالة الرئيسية
 # ==============================
 def main():
     """الدالة الرئيسية لتشغيل البوت"""
+    # إنشاء تطبيق البوت
     application = Application.builder().token(BOT_TOKEN).build()
     
     # إضافة Handlers
@@ -915,34 +860,12 @@ def main():
     application.add_handler(CommandHandler("all", all_command))
     application.add_handler(CommandHandler("test", test_db_command))
     application.add_handler(CommandHandler("debug", debug_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("clearcache", clear_cache_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    # إعداد معالج الأخطاء
-    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.error(f"حدث خطأ: {context.error}")
-        if update and update.effective_chat:
-            await update.effective_chat.send_message("❌ حدث خطأ في المعالجة.")
-    
-    application.add_error_handler(error_handler)
-    
     # تشغيل البوت
-    logger.info("🤖 البوت يعمل باستخدام Polling...")
-    logger.info(f"✅ قاعدة البيانات: {'متصل' if engine else 'غير متصل'}")
-    
-    try:
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            poll_interval=0.5,
-            timeout=30,
-            drop_pending_updates=True
-        )
-    except KeyboardInterrupt:
-        logger.info("إيقاف البوت...")
-        if engine:
-            engine.dispose()
-        logger.info("تم إيقاف البوت.")
+    print("🤖 البوت يعمل باستخدام Polling...")
+    print(f"✅ تم الاتصال بقاعدة البيانات: {engine is not None}")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
