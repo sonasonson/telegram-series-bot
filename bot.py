@@ -67,7 +67,9 @@ async def get_all_content(content_type=None):
     try:
         with engine.connect() as conn:
             query = """
-                SELECT s.id, s.name, s.type, COUNT(e.id) as episode_count
+                SELECT s.id, s.name, s.type, 
+                       COUNT(e.id) as episode_count,
+                       COUNT(DISTINCT e.telegram_channel_id) as channel_count
                 FROM series s
                 LEFT JOIN episodes e ON s.id = e.series_id
             """
@@ -86,7 +88,7 @@ async def get_all_content(content_type=None):
             
             print(f"📊 تم جلب {len(rows)} صفاً من قاعدة البيانات:")
             for row in rows:
-                print(f"   - {row[1]} ({row[2]}) - {row[3]} حلقة/جزء")
+                print(f"   - {row[1]} ({row[2]}) - {row[3]} حلقة/جزء - {row[4]} قناة")
             
             return rows
             
@@ -249,17 +251,17 @@ async def show_content(update: Update, context: ContextTypes.DEFAULT_TYPE, conte
         keyboard = []
         
         for content in content_list:
-            content_id, name, content_type, episode_count = content
+            content_id, name, content_type, episode_count, channel_count = content
             
             if content_type == 'series':
-                count_text = f"{episode_count} حلقة" if episode_count > 0 else "بدون حلقات"
+                count_text = f"{episode_count} حلقة في {channel_count} قناة" if episode_count > 0 else "بدون حلقات"
             else:
-                count_text = f"{episode_count} جزء" if episode_count > 0 else "بدون أجزاء"
+                count_text = f"{episode_count} جزء في {channel_count} قناة" if episode_count > 0 else "بدون أجزاء"
             
-            text += f"{name} ({count_text})\n"
+            text += f"• {name} ({count_text})\n"
             keyboard.append([
                 InlineKeyboardButton(
-                    f"{name[:20]}",
+                    f"{name[:20]} ({episode_count})",
                     callback_data=f"content_{content_id}"
                 )
             ])
@@ -334,7 +336,7 @@ async def test_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """)).fetchall()
             
             episodes_sample = conn.execute(text("""
-                SELECT id, series_id, season, episode_number FROM episodes ORDER BY id LIMIT 5
+                SELECT id, series_id, season, episode_number, telegram_channel_id FROM episodes ORDER BY id LIMIT 5
             """)).fetchall()
             
             series_text = "🎬 *عينة من المسلسلات والأفلام:*\n"
@@ -343,7 +345,7 @@ async def test_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             episodes_text = "📺 *عينة من الحلقات:*\n"
             for row in episodes_sample:
-                episodes_text += f"• ID:{row[0]} - مسلسل:{row[1]} - م{row[2]} ح{row[3]}\n"
+                episodes_text += f"• ID:{row[0]} - مسلسل:{row[1]} - م{row[2]} ح{row[3]} - قناة:{row[4]}\n"
             
             reply_text = f"{tables_info}\n{series_text}\n{episodes_text}"
             
@@ -367,11 +369,27 @@ async def show_content_details(update: Update, context: ContextTypes.DEFAULT_TYP
             return
         
         content_id, name, content_type = content_info
+        
+        # جلب القنوات التي يوجد فيها هذا المحتوى
+        channels = []
+        if engine:
+            with engine.connect() as conn:
+                result = conn.execute(text("""
+                    SELECT DISTINCT telegram_channel_id 
+                    FROM episodes 
+                    WHERE series_id = :series_id
+                """), {"series_id": content_id}).fetchall()
+                channels = [row[0] for row in result]
+        
         episodes, total_episodes, total_pages = await get_content_episodes(content_id, page)
         
         if not episodes:
             item_type = "حلقات" if content_type == 'series' else "أجزاء"
             message_text = f"*{name}*\n\n📭 لا توجد {item_type} حالياً."
+            
+            if channels:
+                message_text += f"\n\n*القنوات:* {', '.join(channels)}"
+            
             keyboard = [[InlineKeyboardButton("⬅️ رجوع", callback_data=f"{content_type}_list")]]
             await query.edit_message_text(
                 message_text, 
@@ -395,7 +413,11 @@ async def show_content_details(update: Update, context: ContextTypes.DEFAULT_TYP
         if total_episodes > 0:
             message_text += f"عدد {item_type}: {total_episodes}\n"
             if total_pages > 1:
-                message_text += f"الصفحة {page} من {total_pages}\n\n"
+                message_text += f"الصفحة {page} من {total_pages}\n"
+        
+        # إظهار القنوات
+        if channels:
+            message_text += f"\n*القنوات:* {', '.join(channels)}\n\n"
         
         keyboard = []
         
@@ -581,6 +603,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             season_num = int(parts[2])
             await show_season_episodes(update, context, content_id, season_num, 1)
             return
+        
+        elif data.startswith('season_page_'):
+            # بيانات الزر: season_page_<content_id>_<season_number>_<page_number>
+            parts = data.split('_')
+            content_id = int(parts[2])
+            season_num = int(parts[3])
+            page = int(parts[4])
+            await show_season_episodes(update, context, content_id, season_num, page)
+            return
             
     except Exception as e:
         logger.error(f"خطأ في button_handler: {e}")
@@ -722,6 +753,7 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
         with engine.connect() as conn:
             result = conn.execute(text("""
                 SELECT e.season, e.episode_number, e.telegram_message_id,
+                       e.telegram_channel_id,
                        s.name as series_name, s.type as series_type, s.id as series_id
                 FROM episodes e
                 JOIN series s ON e.series_id = s.id
@@ -732,11 +764,18 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.edit_message_text("❌ الحلقة/الجزء غير موجود.")
             return
         
-        season, episode_num, msg_id, series_name, series_type, series_id = result
+        season, episode_num, msg_id, channel_id, series_name, series_type, series_id = result
         
-        # بناء الرابط
-        if msg_id:
-            episode_link = f"https://t.me/ShoofFilm/{msg_id}"
+        # بناء الرابط الصحيح بناءً على معرف القناة المخزن
+        if msg_id and channel_id:
+            # إذا كان channel_id يبدأ بـ @ فهو معرف مستخدم
+            if channel_id.startswith('@'):
+                channel_username = channel_id[1:]  # إزالة @
+                episode_link = f"https://t.me/{channel_username}/{msg_id}"
+            else:
+                # إذا كان معرفًا رقميًا
+                episode_link = f"https://t.me/c/{channel_id}/{msg_id}"
+            
             if series_type == 'series':
                 link_text = f"🔗 [رابط الحلقة في القناة]({episode_link})"
                 title_text = f"*{series_name}*\nالموسم {season} - الحلقة {episode_num}"
@@ -758,6 +797,7 @@ async def show_episode_details(update: Update, context: ContextTypes.DEFAULT_TYP
         message_text = (
             f"{title_text}\n\n"
             f"{link_text}\n\n"
+            f"*القناة:* {channel_id}\n"
             f"*ملاحظة:* تأكد من أنك منضم للقناة لمشاهدة المحتوى."
         )
         
@@ -804,20 +844,29 @@ async def test_db_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             movies_examples = conn.execute(text("""
                 SELECT name FROM series WHERE type = 'movie' ORDER BY id LIMIT 3
             """)).fetchall()
+            
+            # جلب القنوات المختلفة
+            distinct_channels = conn.execute(text("""
+                SELECT DISTINCT telegram_channel_id FROM episodes LIMIT 5
+            """)).fetchall()
         
         series_names = [row[0] for row in series_examples] if series_examples else ["لا يوجد"]
         movies_names = [row[0] for row in movies_examples] if movies_examples else ["لا يوجد"]
+        channels = [row[0] for row in distinct_channels] if distinct_channels else ["لا يوجد"]
         
         reply_text = (
             f"✅ *اختبار قاعدة البيانات:*\n\n"
             f"📊 *الإحصائيات:*\n"
             f"• عدد المسلسلات: {series_count}\n"
-            f"• عدد الأفلام: {movies_count}\n\n"
+            f"• عدد الأفلام: {movies_count}\n"
+            f"• عدد القنوات المختلفة: {len(channels)}\n\n"
             f"📺 *أمثلة على المسلسلات:*\n"
             f"{chr(10).join(['• ' + name for name in series_names])}\n\n"
             f"🎬 *أمثلة على الأفلام:*\n"
             f"{chr(10).join(['• ' + name for name in movies_names])}\n\n"
-            f"ℹ️ *ملاحظة:* إذا كانت الأرقام غير صفرية ولكن لا تظهر في القوائم، قد يكون هناك مشكلة في استعلام JOIN."
+            f"📡 *القنوات المتاحة:*\n"
+            f"{chr(10).join(['• ' + channel for channel in channels])}\n\n"
+            f"ℹ️ *ملاحظة:* تأكد من أن الروابط تعمل من القنوات الصحيحة."
         )
         
         keyboard = [
